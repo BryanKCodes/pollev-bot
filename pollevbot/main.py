@@ -1,10 +1,13 @@
+import os
+from dotenv import load_dotenv
+
 from pollevbot import PollBot
 
 
 def main():
-    user = 'My Username'
-    password = 'My Password'
-    host = 'PollEverywhere URL Extension e.g. "uwpsych"'
+    user = os.getenv("USER")
+    password = os.getenv("PASSWORD")
+    host = os.getenv("HOST")
 
     # If you're using a non-uw PollEv account,
     # add the argument "login_type='pollev'"

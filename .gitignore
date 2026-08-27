@@ -112,3 +112,7 @@ setup.py
 /PollEvBot.egg-info
 /dev
 .pypirc
+
+# Browser captures can contain credentials, cookies, and private response data.
+*.har
+fixtures/raw/
