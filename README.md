@@ -65,6 +65,34 @@ reuses it in the process. A starting model to evaluate is
 [Qwen2.5-1.5B-Instruct GGUF, Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF).
 No model is downloaded automatically.
 
+On an Apple Silicon Mac, create a Python 3.12 environment and build the local
+inference package with Metal support:
+
+```
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-nus.txt
+CMAKE_ARGS='-DGGML_METAL=on' python -m pip install --no-binary llama-cpp-python -r requirements-local.txt
+```
+
+Download a GGUF model from its publisher, verify its checksum, and place it
+outside the repository. For the Qwen model linked above, set these values in
+`.env` (use your own absolute model path):
+
+```
+ANSWER_MODE=llm
+LLM_BACKEND=llama_cpp
+LLM_MODEL_PATH=/absolute/path/to/qwen2.5-1.5b-instruct-q4_k_m.gguf
+LLM_GPU_LAYERS=-1
+```
+
+Use `python -m pollevbot.main --check-login` to confirm the NUS session, then
+`caffeinate -i python -m pollevbot.main` to keep the Mac awake while the bot
+polls. The check-login command does not load the model or submit answers. The
+bot loads the model when it first needs an answer. On a new sign-in or expired
+session, complete NUS authentication and MFA in the Chrome window; later runs
+reuse the saved browser profile while its session remains valid.
+
 The provider accepts these environment settings:
 
 | Setting | Default | Purpose |
