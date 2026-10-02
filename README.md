@@ -93,8 +93,10 @@ bot loads the model when it first needs an answer. On a new sign-in or expired
 session, complete NUS authentication and MFA in the Chrome window; later runs
 reuse the saved browser profile while its session remains valid.
 
-The terminal reports when polling starts, then gives one idle status update
-about every minute. When an activity arrives, it prints the question, the
+The terminal reports when polling starts, then refreshes one timestamped idle
+status line after each check without adding lines to the scrollback. Output
+redirected to a file gets one idle update about every minute instead. When an
+activity arrives, the bot prints the question, the
 selected option or generated text, and whether Poll Everywhere accepted the
 response. It reports retries and skips, and distinguishes an uncertain
 submission from an accepted one. Press Ctrl+C to stop. An activity is answered

@@ -2,6 +2,8 @@
 
 import json
 import logging
+import shutil
+import sys
 import time
 from typing import Optional
 
@@ -121,6 +123,25 @@ class PollBot:
         self._failures = {}
         self._retry_after = {}
         self._next_firehose_warning_at = 0.0
+        self._idle_status_visible = False
+
+    def _show_idle_status(self) -> bool:
+        """Refresh one terminal line after a check with no new activity."""
+        if not sys.stderr.isatty():
+            return False
+        message = '{} Polling host {}; no new activity handled.'.format(
+            time.strftime('%H:%M:%S'), self.host)
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        sys.stderr.write('\r\x1b[2K' + _preview(message, max(2, width - 1)))
+        sys.stderr.flush()
+        self._idle_status_visible = True
+        return True
+
+    def _clear_idle_status(self):
+        if self._idle_status_visible:
+            sys.stderr.write('\r\x1b[2K')
+            sys.stderr.flush()
+            self._idle_status_visible = False
 
     def __enter__(self):
         return self
@@ -235,6 +256,7 @@ class PollBot:
         except (requests.RequestException, ValueError, TypeError) as exc:
             now = time.monotonic()
             if now >= self._next_firehose_warning_at:
+                self._clear_idle_status()
                 logger.warning('Activity feed read failed (%s); retrying.',
                                type(exc).__name__)
                 self._next_firehose_warning_at = now + _STATUS_INTERVAL
@@ -431,34 +453,39 @@ class PollBot:
         logger.info('Polling host %s every %.1fs (answer mode: %s).',
                     self.host, self.closed_wait, self.answer_mode)
         next_status_at = time.monotonic() + _STATUS_INTERVAL
-        while self.alive():
-            poll_id = self.get_new_poll_id(token)
-            if poll_id is None:
-                now = time.monotonic()
-                if now >= next_status_at:
-                    logger.info('Still polling host %s; no new activity handled.',
-                                self.host)
-                    next_status_at = now + _STATUS_INTERVAL
-                time.sleep(self.closed_wait)
-                continue
-            if self._failures.get(poll_id, 0) == 0:
-                logger.info('Activity %s detected; waiting %.1fs before responding.',
-                            poll_id, self.open_wait)
-                time.sleep(self.open_wait)
-            if not self.alive():
-                break
-            try:
-                self.answer_poll(poll_id)
-            except RetryablePollError as exc:
-                self._record_retry(poll_id, str(exc))
-            except PollSkipped as exc:
-                self.skipped_polls.add(poll_id)
-                logger.info('Activity %s skipped: %s', poll_id, str(exc))
-            except SubmissionUncertain as exc:
-                self.skipped_polls.add(poll_id)
-                logger.warning('Activity %s submission outcome uncertain; not retrying: %s',
-                               poll_id, str(exc))
-            else:
-                logger.info('Activity %s response accepted.', poll_id)
-            next_status_at = time.monotonic() + _STATUS_INTERVAL
+        try:
+            while self.alive():
+                poll_id = self.get_new_poll_id(token)
+                if poll_id is None:
+                    if not self._show_idle_status():
+                        now = time.monotonic()
+                        if now >= next_status_at:
+                            logger.info('Still polling host %s; no new activity handled.',
+                                        self.host)
+                            next_status_at = now + _STATUS_INTERVAL
+                    time.sleep(self.closed_wait)
+                    continue
+                self._clear_idle_status()
+                if self._failures.get(poll_id, 0) == 0:
+                    logger.info('Activity %s detected; waiting %.1fs before responding.',
+                                poll_id, self.open_wait)
+                    time.sleep(self.open_wait)
+                if not self.alive():
+                    break
+                try:
+                    self.answer_poll(poll_id)
+                except RetryablePollError as exc:
+                    self._record_retry(poll_id, str(exc))
+                except PollSkipped as exc:
+                    self.skipped_polls.add(poll_id)
+                    logger.info('Activity %s skipped: %s', poll_id, str(exc))
+                except SubmissionUncertain as exc:
+                    self.skipped_polls.add(poll_id)
+                    logger.warning('Activity %s submission outcome uncertain; not retrying: %s',
+                                   poll_id, str(exc))
+                else:
+                    logger.info('Activity %s response accepted.', poll_id)
+                next_status_at = time.monotonic() + _STATUS_INTERVAL
+        finally:
+            self._clear_idle_status()
         logger.info('Polling stopped for host %s.', self.host)
