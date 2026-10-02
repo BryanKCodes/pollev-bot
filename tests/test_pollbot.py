@@ -10,7 +10,7 @@ import requests
 from pollevbot.answer_providers import FakeAnswerProvider, LegacyRandomProvider
 from pollevbot.llama_cpp_provider import AnswerUnavailable
 from pollevbot.open_ended_transport import OpenEndedTransport
-from pollevbot.pollbot import (PollBot, PollSkipped, RetryablePollError,
+from pollevbot.pollbot import (LoginError, PollBot, PollSkipped, RetryablePollError,
                               SubmissionUncertain)
 
 
@@ -39,6 +39,7 @@ class FakeSession:
         self.get_results = list(get_results)
         self.post_results = list(post_results)
         self.calls = []
+        self.cookies = requests.cookies.RequestsCookieJar()
 
     @staticmethod
     def _take(results):
@@ -109,7 +110,10 @@ class PollBotDispatchTests(unittest.TestCase):
         provider = FakeAnswerProvider(choice_index=1)
         bot = self.make_bot(session, answer_provider=provider,
                             min_option=1, max_option=3)
-        self.assertEqual(bot.answer_poll('poll-1'), {'success': True})
+        with self.assertLogs('pollevbot.pollbot', level='INFO') as logged:
+            self.assertEqual(bot.answer_poll('poll-1'), {'success': True})
+        self.assertTrue(any('question: Choose & explain?' in line
+                            for line in logged.output))
         self.assertEqual(provider.choice_requests,
                          [('Choose & explain?', ('Second', 'Third'))])
         self.assertEqual(session.calls[2][2]['data']['option_id'], 'opaque-third')
@@ -122,6 +126,38 @@ class PollBotDispatchTests(unittest.TestCase):
         with self.assertRaises(PollSkipped):
             bot.answer_poll('poll-1')
         self.assertEqual(len(session.calls), 3)
+
+    def test_missing_course_feed_token_is_a_connection_failure(self):
+        session = FakeSession(get_results=[response(payload={'firehose_token': None})])
+        bot = self.make_bot(session)
+        with self.assertRaisesRegex(LoginError, 'not authorized'):
+            bot.get_firehose_token()
+
+    def test_pre_registration_failure_explains_course_roster(self):
+        session = FakeSession(get_results=[response(payload={
+            'firehose_token': None,
+            'registration_suggested': True,
+            'participant_self_registration': False})])
+        bot = self.make_bot(session)
+        with self.assertRaisesRegex(LoginError, 'course roster'):
+            bot.get_firehose_token()
+
+    def test_feed_subscription_denial_is_not_treated_as_idle(self):
+        session = FakeSession(get_results=[response(payload={
+            'message': json.dumps({'error': {
+                'type': 'UnauthorizedSubscription',
+                'message': 'You are not authorized to subscribe'}})})])
+        bot = self.make_bot(session)
+        with self.assertRaisesRegex(LoginError, 'rejected this account'):
+            bot.get_new_poll_id('fixture-token')
+
+    def test_other_feed_error_is_reported_without_activity(self):
+        session = FakeSession(get_results=[response(payload={
+            'message': json.dumps({'error': {'type': 'TemporaryFailure'}})})])
+        bot = self.make_bot(session)
+        with self.assertLogs('pollevbot.pollbot', level='WARNING') as logged:
+            self.assertIsNone(bot.get_new_poll_id('fixture-token'))
+        self.assertTrue(any('TemporaryFailure' in line for line in logged.output))
 
     def test_open_ended_dispatch_uses_injected_transport_and_clean_text(self):
         session = FakeSession(

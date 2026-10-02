@@ -96,7 +96,7 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
             raise NusLoginError('Could not open Chrome for NUS SSO: {}'.format(exc)) from exc
         try:
             if all(_session_state(context, session)):
-                logger.info('Reused the NUS browser session for the course host.')
+                logger.info('Reused the NUS browser identity session.')
                 return
         finally:
             context.close()
@@ -139,7 +139,7 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
                 try:
                     identity_ready, participant_ready = _session_state(context, session)
                     if identity_ready and participant_ready:
-                        logger.info('NUS SSO connected to the course host.')
+                        logger.info('NUS SSO participant session established.')
                         return
                     if identity_ready and not participant_ready and not prompted_for_name:
                         logger.info('Finish the respondent name prompt in Chrome.')

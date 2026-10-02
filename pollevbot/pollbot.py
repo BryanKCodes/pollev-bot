@@ -226,7 +226,7 @@ class PollBot:
             success = self._pollev_login()
         if not success:
             raise LoginError('Poll Everywhere login failed.')
-        logger.info('Login successful.')
+        logger.info('Poll Everywhere identity session established; checking host access.')
 
     def get_firehose_token(self) -> str:
         from uuid import uuid4
@@ -238,7 +238,19 @@ class PollBot:
         if 'presenter not found' in response.text.lower():
             raise ValueError('The poll host was not found.')
         response.raise_for_status()
-        return response.json()['firehose_token']
+        registration = response.json()
+        token = registration.get('firehose_token')
+        if not isinstance(token, str) or not token.strip():
+            if (registration.get('registration_suggested')
+                    and registration.get('participant_self_registration') is False):
+                raise LoginError(
+                    'This host requires pre-registration and does not allow '
+                    'self-registration. Sign in with the account on the course '
+                    'roster or ask the presenter to add it.')
+            raise LoginError(
+                'This account is not authorized for the course activity feed. '
+                'Check registration with the presenter and sign in with the registered account.')
+        return token
 
     def get_new_poll_id(self, firehose_token=None) -> Optional[str]:
         if firehose_token:
@@ -250,7 +262,22 @@ class PollBot:
         try:
             response = self.session.get(url, timeout=0.3)
             response.raise_for_status()
-            poll_id = json.loads(response.json()['message'])['uid']
+            message = json.loads(response.json()['message'])
+            if not isinstance(message, dict):
+                return None
+            error = message.get('error')
+            if isinstance(error, dict) and error.get('type') == 'UnauthorizedSubscription':
+                raise LoginError('The course activity feed rejected this account.')
+            if error:
+                now = time.monotonic()
+                if now >= self._next_firehose_warning_at:
+                    self._clear_idle_status()
+                    error_type = error.get('type') if isinstance(error, dict) else type(error).__name__
+                    logger.warning('Activity feed returned an error (%s); retrying.',
+                                   _preview(str(error_type), 60))
+                    self._next_firehose_warning_at = now + _STATUS_INTERVAL
+                return None
+            poll_id = message.get('uid')
         except (requests.exceptions.ReadTimeout, KeyError):
             return None
         except (requests.RequestException, ValueError, TypeError) as exc:
@@ -445,7 +472,10 @@ class PollBot:
         try:
             self.login()
             token = self.get_firehose_token()
-        except (LoginError, NusLoginError, ValueError, requests.RequestException,
+        except LoginError as exc:
+            logger.error('Could not start polling: %s', exc)
+            return
+        except (NusLoginError, ValueError, requests.RequestException,
                 RetryablePollError) as exc:
             logger.error('Could not start polling: %s', type(exc).__name__)
             return
@@ -455,7 +485,12 @@ class PollBot:
         next_status_at = time.monotonic() + _STATUS_INTERVAL
         try:
             while self.alive():
-                poll_id = self.get_new_poll_id(token)
+                try:
+                    poll_id = self.get_new_poll_id(token)
+                except LoginError as exc:
+                    self._clear_idle_status()
+                    logger.error('Polling stopped: %s', exc)
+                    break
                 if poll_id is None:
                     if not self._show_idle_status():
                         now = time.monotonic()

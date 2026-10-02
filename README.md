@@ -36,8 +36,9 @@ pip install -r requirements-nus.txt
 ```
 
 Set `POLLHOST` to the presenter name from the course URL and `LOGIN_TYPE=nus`
-in `.env`. `PASSWORD` is not used for NUS sign-in; enter your credentials only
-in the Chrome window opened by the bot. Run a connection check before starting
+in `.env`. `USERNAME` and `PASSWORD` do not select the NUS account; the saved
+Chrome profile does. Enter your credentials only in the Chrome window opened
+by the bot. Run a connection check before starting
 the polling loop:
 
 ```
@@ -52,6 +53,14 @@ to use another profile directory or
 `NUS_LOGIN_TIMEOUT` to change the 300-second sign-in window. The profile
 contains session credentials and is ignored by Git. NUS browser sign-in is
 intended for a local computer with a desktop browser, not a Heroku dyno.
+
+The connection check also requires a usable activity-feed token for the course
+host. A valid NUS sign-in alone does not prove that the Poll Everywhere account
+is registered with the presenter. If the check reports pre-registration is
+required, sign in with the account on the course roster or ask the presenter to
+register it. To sign in with a different account, set `NUS_BROWSER_PROFILE` to
+a new absolute directory outside this repository and rerun `--check-login`.
+See Poll Everywhere’s [participant registration guidance](https://support.polleverywhere.com/pe1/participants-cannot-self-register).
 
 ## Local answer provider
 
@@ -102,6 +111,10 @@ response. It reports retries and skips, and distinguishes an uncertain
 submission from an accepted one. Press Ctrl+C to stop. An activity is answered
 at most once during a single bot run; this bookkeeping is in memory, so a new
 run does not remember which activity IDs the previous run handled.
+For multiple-choice activities, the bot logs the title supplied to the
+participant endpoint before asking the model for an answer. If that endpoint
+does not supply question text, LLM mode skips the activity. Presenter-only text
+cannot be inferred from answer options.
 
 The provider accepts these environment settings:
 

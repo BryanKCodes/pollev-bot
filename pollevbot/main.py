@@ -3,6 +3,7 @@ import argparse
 from dotenv import load_dotenv
 
 from pollevbot import PollBot
+from pollevbot.pollbot import LoginError
 from pollevbot.runtime_config import bot_options_from_env
 
 
@@ -33,6 +34,8 @@ def main():
                 bot.run()
     except KeyboardInterrupt:
         print('\nStopped by user.')
+    except LoginError as exc:
+        parser.exit(1, 'Poll Everywhere connection failed: {}\n'.format(exc))
 
 
 if __name__ == '__main__':
