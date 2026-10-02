@@ -19,6 +19,13 @@ from .open_ended_transport import OpenEndedTransport
 
 logger = logging.getLogger(__name__)
 __all__ = ['PollBot']
+_STATUS_INTERVAL = 60
+
+
+def _preview(value: str, limit: int = 160) -> str:
+    """Keep one activity or answer readable on a single terminal line."""
+    text = ' '.join(value.split())
+    return text if len(text) <= limit else text[:limit - 1] + '…'
 
 
 class LoginError(RuntimeError):
@@ -113,6 +120,7 @@ class PollBot:
         self.in_flight_polls = set()
         self._failures = {}
         self._retry_after = {}
+        self._next_firehose_warning_at = 0.0
 
     def __enter__(self):
         return self
@@ -225,7 +233,11 @@ class PollBot:
         except (requests.exceptions.ReadTimeout, KeyError):
             return None
         except (requests.RequestException, ValueError, TypeError) as exc:
-            logger.warning('Firehose read failed: %s', type(exc).__name__)
+            now = time.monotonic()
+            if now >= self._next_firehose_warning_at:
+                logger.warning('Activity feed read failed (%s); retrying.',
+                               type(exc).__name__)
+                self._next_firehose_warning_at = now + _STATUS_INTERVAL
             return None
         if not isinstance(poll_id, (str, int)) or isinstance(poll_id, bool):
             return None
@@ -329,6 +341,8 @@ class PollBot:
             if self.answer_mode == 'skip':
                 raise PollSkipped('answer_mode_skip')
             activity = self._fetch_activity(poll_id)
+            logger.info('Activity %s: %s question: %s', poll_id,
+                        activity.kind.value, _preview(activity.question) or '(unavailable)')
             if activity.kind is ActivityKind.UNSUPPORTED:
                 raise PollSkipped('unsupported_activity')
             text_required = not isinstance(self.answer_provider, LegacyRandomProvider)
@@ -341,17 +355,24 @@ class PollBot:
                     raise PollSkipped('no_candidate_options')
                 if text_required and any(not option.text for option in candidates):
                     raise PollSkipped('missing_candidate_text')
+                logger.info('Activity %s: selecting from %s options (%s mode).',
+                            poll_id, len(candidates), self.answer_mode)
                 try:
                     selection = self.answer_provider.select_option(
                         activity.question, [option.text for option in candidates])
                 except UnsupportedAnswerKind as exc:
                     raise PollSkipped('provider_does_not_support_activity') from exc
                 except Exception as exc:
+                    logger.warning('Activity %s: answer generation failed (%s).',
+                                   poll_id, type(exc).__name__)
                     raise RetryablePollError('answer_generation_failed') from exc
                 try:
                     option_id = resolve_option_id(selection, candidates)
                 except (InvalidAnswer, AttributeError) as exc:
                     raise RetryablePollError('invalid_provider_answer') from exc
+                logger.info('Activity %s: selected option %s/%s: %s', poll_id,
+                            selection.index + 1, len(candidates),
+                            _preview(candidates[selection.index].text) or '(no text)')
                 result = self._submit_multiple_choice(poll_id, option_id)
             elif activity.kind is ActivityKind.OPEN_ENDED:
                 if self.open_ended_transport is None:
@@ -361,6 +382,8 @@ class PollBot:
                 except UnsupportedAnswerKind as exc:
                     raise PollSkipped('provider_does_not_support_activity') from exc
                 except Exception as exc:
+                    logger.warning('Activity %s: answer generation failed (%s).',
+                                   poll_id, type(exc).__name__)
                     raise RetryablePollError('answer_generation_failed') from exc
                 if not isinstance(response, TextAnswer):
                     raise RetryablePollError('invalid_text_answer_type')
@@ -368,6 +391,7 @@ class PollBot:
                     text = clean_open_ended_answer(response.text, self.max_open_chars)
                 except InvalidAnswer as exc:
                     raise RetryablePollError('invalid_provider_answer') from exc
+                logger.info('Activity %s: generated answer: %s', poll_id, text)
                 result = self._submit_open_ended(poll_id, text)
             else:
                 raise PollSkipped('unsupported_activity')
@@ -386,12 +410,13 @@ class PollBot:
         self._failures[poll_id] = count
         if count >= self.retry_limit:
             self.skipped_polls.add(poll_id)
-            logger.warning('Activity skipped after %s attempts: %s', count, reason)
+            logger.warning('Activity %s skipped after %s attempts: %s',
+                           poll_id, count, reason)
             return
         delay = self.retry_backoff * (2 ** (count - 1))
         self._retry_after[poll_id] = time.monotonic() + delay
-        logger.warning('Activity retry %s/%s in %.1fs: %s',
-                       count + 1, self.retry_limit, delay, reason)
+        logger.warning('Activity %s: retry %s/%s in %.1fs: %s',
+                       poll_id, count + 1, self.retry_limit, delay, reason)
 
     def run(self):
         """Poll the host until lifetime expires, with bounded safe retries."""
@@ -403,14 +428,22 @@ class PollBot:
             logger.error('Could not start polling: %s', type(exc).__name__)
             return
 
+        logger.info('Polling host %s every %.1fs (answer mode: %s).',
+                    self.host, self.closed_wait, self.answer_mode)
+        next_status_at = time.monotonic() + _STATUS_INTERVAL
         while self.alive():
             poll_id = self.get_new_poll_id(token)
             if poll_id is None:
+                now = time.monotonic()
+                if now >= next_status_at:
+                    logger.info('Still polling host %s; no new activity handled.',
+                                self.host)
+                    next_status_at = now + _STATUS_INTERVAL
                 time.sleep(self.closed_wait)
                 continue
             if self._failures.get(poll_id, 0) == 0:
-                logger.info('Activity detected; waiting %.1fs before responding.',
-                            self.open_wait)
+                logger.info('Activity %s detected; waiting %.1fs before responding.',
+                            poll_id, self.open_wait)
                 time.sleep(self.open_wait)
             if not self.alive():
                 break
@@ -418,8 +451,14 @@ class PollBot:
                 self.answer_poll(poll_id)
             except RetryablePollError as exc:
                 self._record_retry(poll_id, str(exc))
-            except (PollSkipped, SubmissionUncertain) as exc:
+            except PollSkipped as exc:
                 self.skipped_polls.add(poll_id)
-                logger.info('Activity skipped: %s', str(exc))
+                logger.info('Activity %s skipped: %s', poll_id, str(exc))
+            except SubmissionUncertain as exc:
+                self.skipped_polls.add(poll_id)
+                logger.warning('Activity %s submission outcome uncertain; not retrying: %s',
+                               poll_id, str(exc))
             else:
-                logger.info('Activity response accepted.')
+                logger.info('Activity %s response accepted.', poll_id)
+            next_status_at = time.monotonic() + _STATUS_INTERVAL
+        logger.info('Polling stopped for host %s.', self.host)

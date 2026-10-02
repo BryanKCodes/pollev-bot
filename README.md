@@ -93,6 +93,14 @@ bot loads the model when it first needs an answer. On a new sign-in or expired
 session, complete NUS authentication and MFA in the Chrome window; later runs
 reuse the saved browser profile while its session remains valid.
 
+The terminal reports when polling starts, then gives one idle status update
+about every minute. When an activity arrives, it prints the question, the
+selected option or generated text, and whether Poll Everywhere accepted the
+response. It reports retries and skips, and distinguishes an uncertain
+submission from an accepted one. Press Ctrl+C to stop. An activity is answered
+at most once during a single bot run; this bookkeeping is in memory, so a new
+run does not remember which activity IDs the previous run handled.
+
 The provider accepts these environment settings:
 
 | Setting | Default | Purpose |

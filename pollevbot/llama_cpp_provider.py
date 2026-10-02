@@ -113,10 +113,13 @@ def _model_for(config: LlamaCppConfig):
                 raise ModelConfigurationError(
                     'Install requirements-local.txt to use the local LLM.') from exc
             try:
+                logger.info('Loading local model %s (GPU layers: %s).',
+                            config.model_path.name, config.gpu_layers)
                 _MODEL_CACHE[key] = Llama(
                     model_path=str(config.model_path), n_ctx=config.context_size,
                     n_threads=config.threads, n_gpu_layers=config.gpu_layers,
                     seed=config.seed, verbose=False)
+                logger.info('Local model ready.')
             except Exception as exc:
                 raise ModelConfigurationError(
                     'Could not load the GGUF model ({}).'.format(type(exc).__name__)) from exc
@@ -184,6 +187,7 @@ class LlamaCppProvider(AnswerProvider):
                        options: Sequence[str], reason: str) -> OptionSelection:
         logger.warning('No validated multiple-choice model answer: %s', reason)
         if self.config.failure_policy == 'random':
+            logger.warning('Using the configured random answer fallback.')
             return self._random_fallback.select_option(question, options)
         raise AnswerUnavailable('No validated multiple-choice answer.')
 

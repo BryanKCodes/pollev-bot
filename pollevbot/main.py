@@ -20,16 +20,19 @@ def main():
     options = bot_options_from_env()
     if args.check_login:
         options['answer_mode'] = 'skip'
-    with PollBot(user, password, host, login_type=login_type,
-                 browser_profile=os.getenv('NUS_BROWSER_PROFILE'),
-                 login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
-                 **options) as bot:
-        if args.check_login:
-            bot.login()
-            bot.get_firehose_token()
-            print('Poll Everywhere login and host connection verified.')
-        else:
-            bot.run()
+    try:
+        with PollBot(user, password, host, login_type=login_type,
+                     browser_profile=os.getenv('NUS_BROWSER_PROFILE'),
+                     login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
+                     **options) as bot:
+            if args.check_login:
+                bot.login()
+                bot.get_firehose_token()
+                print('Poll Everywhere login and host connection verified.')
+            else:
+                bot.run()
+    except KeyboardInterrupt:
+        print('\nStopped by user.')
 
 
 if __name__ == '__main__':
