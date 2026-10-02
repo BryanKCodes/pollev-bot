@@ -33,6 +33,18 @@
             "description": "Inclusive zero-based first multiple-choice option",
             "value": "0"
         },
+        "MAX_OPTION": {
+            "description": "Optional exclusive option bound; unset means all options except the legacy Scheduler random default",
+            "required": false
+        },
+        "OPEN_WAIT": {
+            "description": "Seconds to wait before answering a newly opened activity",
+            "required": false
+        },
+        "CLOSED_WAIT": {
+            "description": "Seconds between idle firehose checks",
+            "value": "5"
+        },
         "POLL_REQUEST_TIMEOUT": {
             "description": "Timeout in seconds for activity, CSRF, and submit requests",
             "value": "15"
@@ -44,6 +56,54 @@
         "POLL_RETRY_BACKOFF": {
             "description": "Initial retry delay in seconds; later delays double",
             "value": "2"
+        },
+        "LLM_BACKEND": {
+            "description": "Local model backend, currently llama_cpp only",
+            "value": "llama_cpp"
+        },
+        "LLM_MODEL_PATH": {
+            "description": "Absolute path to a provisioned GGUF model; needed only in llm mode",
+            "required": false
+        },
+        "LLM_CONTEXT_SIZE": {
+            "description": "Local model context size",
+            "value": "2048"
+        },
+        "LLM_THREADS": {
+            "description": "CPU inference threads; unset defaults to half the CPU count",
+            "required": false
+        },
+        "LLM_GPU_LAYERS": {
+            "description": "Number of model layers to offload to GPU",
+            "value": "0"
+        },
+        "LLM_MCQ_MAX_TOKENS": {
+            "description": "Maximum generated tokens for a multiple-choice answer",
+            "value": "8"
+        },
+        "LLM_OPEN_MAX_TOKENS": {
+            "description": "Maximum generated tokens for an open-ended answer",
+            "value": "64"
+        },
+        "LLM_TEMPERATURE": {
+            "description": "Local model sampling temperature",
+            "value": "0"
+        },
+        "LLM_INFERENCE_TIMEOUT": {
+            "description": "Soft inference deadline in seconds",
+            "value": "30"
+        },
+        "LLM_MAX_OPEN_CHARS": {
+            "description": "Maximum characters in an open-ended answer",
+            "value": "280"
+        },
+        "LLM_FAILURE_POLICY": {
+            "description": "On MCQ model failure: skip by default or explicitly choose random",
+            "value": "skip"
+        },
+        "LLM_SEED": {
+            "description": "Local model sampling seed",
+            "value": "0"
         },
         "LIFETIME": {
             "description": "Time to run pollevbot before terminating (in seconds). Set to inf to run forever.",

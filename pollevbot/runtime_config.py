@@ -8,7 +8,7 @@ def bot_options_from_env(env: Optional[Mapping[str, str]] = None,
                          random_max_option: Optional[int] = None,
                          default_open_wait: float = 5) -> dict:
     values = os.environ if env is None else env
-    mode = values.get('ANSWER_MODE', 'random').lower()
+    mode = values.get('ANSWER_MODE', 'random').strip().lower()
     max_option = values.get('MAX_OPTION')
     if max_option is None:
         max_option = random_max_option if mode == 'random' else None

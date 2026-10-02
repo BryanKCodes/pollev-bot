@@ -4,7 +4,8 @@
 It continually checks if a specified host has opened any polls. Multiple-choice
 answers use random selection by default; a local model can be selected instead.
 
-Requires Python 3.7 or later.
+Requires Python 3.8 or later for the local model dependency.
+
 ## Dependencies
 
 [Requests](https://pypi.org/project/requests/), 
@@ -14,33 +15,16 @@ Requires Python 3.7 or later.
 
 ## Usage
 
-Install `pollevbot`:
+Clone this repository and install its base dependencies:
 ```
-pip install pollevbot
-```
-
-Set your username, password, and desired poll host:
-```python
-user = 'My Username'
-password = 'My Password'
-host = 'PollEverywhere URL Extension e.g. "uwpsych"'
+python -m pip install -r requirements.txt
 ```
 
-And run the script.
-```python
-from pollevbot import PollBot
-
-user = 'My Username'
-password = 'My Password'
-host = 'PollEverywhere URL Extension e.g. "uwpsych"'
-
-# If you're using a non-UW PollEv account,
-# add the argument "login_type='pollev'"
-with PollBot(user, password, host) as bot:
-    bot.run()
-```
-Alternatively, clone this repo, set your account details in a local `.env` file,
-and run `python -m pollevbot.main`.
+Set `USERNAME`, `PASSWORD`, `POLLHOST`, and `LOGIN_TYPE` in a local `.env` file
+or environment.
+Use `LOGIN_TYPE=nus` for the browser-based NUS flow; its password is entered
+only in the browser. Run `python -m pollevbot.main`. The Python API accepts the
+same settings as `PollBot` constructor arguments.
 
 ## NUS SSO on a local computer
 
@@ -134,7 +118,28 @@ submission receive bounded retries; a submission timeout or unclear server
 response is held as attempted and is not resent, to avoid duplicate answers.
 The `--check-login` command checks the connection without loading a model.
 The standard Heroku dependency set has no local inference package or GGUF
-model; `ANSWER_MODE=llm` needs a separately provisioned host with both.
+model; `ANSWER_MODE=llm` needs a separately provisioned host with both. A
+small Heroku dyno is unlikely to fit an in-process model unchanged. For Heroku,
+use the existing random/skip mode, or separately build and provision an
+authorized model service or API backend before selecting it in code.
+
+## Verification
+
+Run the isolated unit and mocked HTTP tests with
+`python -m unittest discover -s tests -v`. These tests never contact Poll
+Everywhere. `python -m scripts.benchmark_local_model /path/to/questions.json`
+can measure cold model load, answer latency, invalid output rate, accuracy on
+a permissioned JSON question
+set, and peak memory after a local GGUF model is installed. Compare its latency
+with `OPEN_WAIT` before using the model in a live poll.
+Each JSON item needs `kind` (`multiple_choice` or `open_ended`) and `question`;
+MCQ items also need ordered `options` and may include a zero-based
+`expected_index` for accuracy. Keep private question sets outside this repo.
+
+A live end-to-end test requires a private host with a multiple-choice activity
+and a separately verified open-ended fetch/submission route. This repository
+does not yet have such a route or captured fixture. The mocked open-ended tests
+exercise an injected transport contract, not a Poll Everywhere endpoint.
 
 ## Heroku
 
@@ -167,9 +172,10 @@ variables as follows:
 * `LIFETIME`: `3600`
 * `LOGIN_TYPE`: `uw`
 * `MINUTE`: `30`
-* `PASSWORD`: `yourpassword`
 * `POLLHOST`: `teacher123`
-* `USERNAME`: `yourusername`
+
+Set `USERNAME` and `PASSWORD` as private Heroku config vars for the authorized
+test account.
 
 Then click `Deploy App` and wait for the app to finish building. 
 **pollevbot** is now deployed to Heroku! 
