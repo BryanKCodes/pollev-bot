@@ -7,7 +7,7 @@ endpoints = {
     'uw_saml': 'https://www.polleverywhere.com/auth/washington?'
                'redirect=https%3A%2F%2Fpollev.com%2F&token_required=false',
     'uw_callback': 'https://www.polleverywhere.com/auth/washington/callback',
-    'uw_auth_token': 'https://pollev.com/proxy/api/participant_auth_token',
+    'participant_auth_token': 'https://pollev.com/proxy/api/participant_auth_token',
 
     # General Login
     'login': 'https://pollev.com/proxy/api/sessions',

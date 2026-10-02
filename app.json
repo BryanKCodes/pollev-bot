@@ -22,7 +22,7 @@
             "description": "Cron string specifying what minutes to run pollevbot"
         },
         "LOGIN_TYPE": {
-            "description": "Login protocol to use (either uw or pollev)",
+            "description": "Login protocol to use (uw or pollev on Heroku; nus requires a local desktop browser)",
             "value": "uw"
         },
         "LIFETIME": {

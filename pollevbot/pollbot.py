@@ -3,6 +3,7 @@ import logging
 import time
 from typing import Optional
 from .endpoints import endpoints
+from .nus_auth import NusLoginError
 
 logger = logging.getLogger(__name__)
 __all__ = ['PollBot']
@@ -27,16 +28,18 @@ class PollBot:
     def __init__(self, user: str, password: str, host: str,
                  login_type: str = 'uw', min_option: int = 0,
                  max_option: int = None, closed_wait: float = 5,
-                 open_wait: float = 5, lifetime: float = float('inf')):
+                 open_wait: float = 5, lifetime: float = float('inf'),
+                 browser_profile: str = None, login_timeout: float = 300):
         """
         Constructor. Creates a PollBot that answers polls on pollev.com.
 
         :param user: PollEv account username.
         :param password: PollEv account password.
         :param host: PollEv host name, i.e. 'uwpsych'
-        :param login_type: Login protocol to use (either 'uw' or 'pollev').
+        :param login_type: Login protocol to use ('uw', 'pollev', or 'nus').
                         If 'uw', uses MyUW (SAML2 SSO) to authenticate.
                         If 'pollev', uses pollev.com.
+                        If 'nus', opens Chrome for NUS SSO and MFA.
         :param min_option: Minimum index (0-indexed) of option to select (inclusive).
         :param max_option: Maximum index (0-indexed) of option to select (exclusive).
         :param closed_wait: Time to wait in seconds if no polls are open
@@ -45,11 +48,12 @@ class PollBot:
                         before answering.
         :param lifetime: Lifetime of this PollBot (in seconds).
                         If float('inf'), runs forever.
-        :raises ValueError: if login_type is not 'uw' or 'pollev'.
+        :raises ValueError: if login_type is unsupported.
         """
-        if login_type not in {'uw', 'pollev'}:
+        login_type = login_type.lower()
+        if login_type not in {'uw', 'pollev', 'nus'}:
             raise ValueError(f"'{login_type}' is not a supported login type. "
-                             f"Use 'uw' or 'pollev'.")
+                             f"Use 'uw', 'pollev', or 'nus'.")
         if login_type == 'pollev' and user.strip().lower().endswith('@uw.edu'):
             logger.warning(f"{user} looks like a UW email. "
                            f"Use login_type='uw' to log in with MyUW.")
@@ -58,6 +62,8 @@ class PollBot:
         self.password = password
         self.host = host
         self.login_type = login_type
+        self.browser_profile = browser_profile
+        self.login_timeout = login_timeout
         # 0-indexed minimum and maximum option
         # indices to select on poll.
         self.min_option = min_option
@@ -90,7 +96,13 @@ class PollBot:
 
     def _get_csrf_token(self) -> str:
         url = endpoints['csrf'].format(timestamp=self.timestamp())
-        return self.session.get(url).json()['token']
+        return self.session.get(url, timeout=15).json()['token']
+
+    def _exchange_auth_token(self, token: str) -> bool:
+        r = self.session.post(endpoints['participant_auth_token'],
+                              headers={'x-csrf-token': self._get_csrf_token()},
+                              data={'token': token}, timeout=15)
+        return r.ok
 
     def _pollev_login(self) -> bool:
         """
@@ -112,22 +124,25 @@ class PollBot:
         """
         import bs4 as bs
         import re
+        from urllib.parse import urljoin
 
         logger.info("Logging into PollEv through MyUW.")
 
         r = self.session.get(endpoints['uw_saml'])
         soup = bs.BeautifulSoup(r.text, "html.parser")
-        data = soup.find('form', id='idplogindiv')['action']
-        session_id = re.findall(r'jsessionid=(.*)\.', data)
+        login_form = soup.find('form', id='idplogindiv')
+        if not login_form or not login_form.get('action'):
+            return False
+        login_url = urljoin(r.url, login_form['action'])
 
-        r = self.session.post(endpoints['uw_login'].format(id=session_id),
+        r = self.session.post(login_url,
                               data={
                                   'j_username': self.user,
                                   'j_password': self.password,
                                   '_eventId_proceed': 'Sign in'
                               })
         soup = bs.BeautifulSoup(r.text, "html.parser")
-        saml_response = soup.find('input', type='hidden')
+        saml_response = soup.find('input', attrs={'name': 'SAMLResponse'})
 
         # When user authentication fails, UW will send an empty SAML response.
         if not saml_response:
@@ -135,11 +150,11 @@ class PollBot:
 
         r = self.session.post(endpoints['uw_callback'],
                               data={'SAMLResponse': saml_response['value']})
-        auth_token = re.findall('pe_auth_token=(.*)', r.url)[0]
-        self.session.post(endpoints['uw_auth_token'],
-                          headers={'x-csrf-token': self._get_csrf_token()},
-                          data={'token': auth_token})
-        return True
+        auth_match = re.search(r'pe_auth_token=([^&]+)', r.url)
+        if not auth_match:
+            return False
+        auth_token = auth_match.group(1)
+        return self._exchange_auth_token(auth_token)
 
     def login(self):
         """
@@ -147,7 +162,13 @@ class PollBot:
 
         :raises LoginError: if login failed.
         """
-        if self.login_type.lower() == 'uw':
+        if self.login_type == 'nus':
+            from .nus_auth import login as nus_login
+            nus_login(self.session, self.host, profile_dir=self.browser_profile,
+                      timeout=self.login_timeout,
+                      exchange_token=self._exchange_auth_token)
+            success = True
+        elif self.login_type == 'uw':
             success = self._uw_login()
         else:
             success = self._pollev_login()
@@ -170,9 +191,9 @@ class PollBot:
         self.session.cookies['pollev_visit'] = str(uuid4())
         url = endpoints['firehose_auth'].format(
             host=self.host,
-            timestamp=self.timestamp
+            timestamp=self.timestamp()
         )
-        r = self.session.get(url)
+        r = self.session.get(url, timeout=15)
 
         if "presenter not found" in r.text.lower():
             raise ValueError(f"'{self.host}' is not a valid poll host.")
@@ -185,12 +206,12 @@ class PollBot:
             url = endpoints['firehose_with_token'].format(
                 host=self.host,
                 token=firehose_token,
-                timestamp=self.timestamp
+                timestamp=self.timestamp()
             )
         else:
             url = endpoints['firehose_no_token'].format(
                 host=self.host,
-                timestamp=self.timestamp
+                timestamp=self.timestamp()
             )
         try:
             r = self.session.get(url, timeout=0.3)
@@ -235,7 +256,7 @@ class PollBot:
         try:
             self.login()
             token = self.get_firehose_token()
-        except (LoginError, ValueError) as e:
+        except (LoginError, NusLoginError, ValueError) as e:
             logger.error(e)
             return
 

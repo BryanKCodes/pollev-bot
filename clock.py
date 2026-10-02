@@ -8,7 +8,7 @@ Required config variables:
     - DAY_OF_WEEK (cron string)
     - HOUR (cron string)
     - MINUTE (cron string)
-    - LOGIN_TYPE ('uw' or 'pollev')
+    - LOGIN_TYPE ('uw' or 'pollev'; 'nus' requires a local desktop browser)
     - LIFETIME
 
 clock.py is a standalone program that schedules and runs

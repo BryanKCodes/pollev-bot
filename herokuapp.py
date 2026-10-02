@@ -6,7 +6,7 @@ Required config variables:
     - USERNAME
     - PASSWORD
     - POLLHOST
-    - LOGIN_TYPE ('uw' or 'pollev')
+    - LOGIN_TYPE ('uw' or 'pollev'; 'nus' requires a local desktop browser)
     - LIFETIME
     - DAY_OF_WEEK (cron string)
 

@@ -10,3 +10,4 @@ six==1.14.0
 soupsieve==2.0
 tzlocal==2.0.0
 urllib3==1.25.9
+python-dotenv==1.0.1

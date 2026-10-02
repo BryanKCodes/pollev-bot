@@ -39,8 +39,35 @@ host = 'PollEverywhere URL Extension e.g. "uwpsych"'
 with PollBot(user, password, host) as bot:
     bot.run()
 ```
-Alternatively, you can clone this repo, set your login credentials in 
-[main.py](pollevbot/main.py) and run it from there.
+Alternatively, clone this repo, set your account details in a local `.env` file,
+and run `python -m pollevbot.main`.
+
+## NUS SSO on a local computer
+
+NUS accounts sign in through a browser and may require MFA. Use Python 3.10 or
+newer and Google Chrome, then install the optional browser dependency:
+
+```
+pip install -r requirements-nus.txt
+```
+
+Set `POLLHOST` to the presenter name from the course URL and `LOGIN_TYPE=nus`
+in `.env`. `PASSWORD` is not used for NUS sign-in; enter your credentials only
+in the Chrome window opened by the bot. Run a connection check before starting
+the polling loop:
+
+```
+python -m pollevbot.main --check-login
+```
+
+Complete NUS sign-in, MFA, and any respondent name prompt in that window. The
+dedicated browser profile in `.pollev-auth/` preserves the SSO session between
+runs. The bot checks the Poll Everywhere identity session, participant cookie,
+and course host connection before reporting success. Set `NUS_BROWSER_PROFILE`
+to use another profile directory or
+`NUS_LOGIN_TIMEOUT` to change the 300-second sign-in window. The profile
+contains session credentials and is ignored by Git. NUS browser sign-in is
+intended for a local computer with a desktop browser, not a Heroku dyno.
 
 ## Heroku
 
@@ -55,7 +82,7 @@ specifying weekdays to run pollevbot (e.g. `mon,wed` is Monday and Wednesday).
 * `HOUR`: [cron](https://apscheduler.readthedocs.io/en/stable/modules/triggers/cron.html) string
 (UTC time) specifying which hours to run pollevbot.
 * `LIFETIME`: Time to run pollevbot before terminating (in seconds). Set to `inf` to run forever.
-* `LOGIN_TYPE`: Login protocol to use (either `uw` or `pollev`).
+* `LOGIN_TYPE`: Login protocol to use (`uw` or `pollev` on Heroku; `nus` locally).
 * `MINUTE`: [cron](https://apscheduler.readthedocs.io/en/stable/modules/triggers/cron.html) string
 specifying what minutes to run pollevbot.
 * `PASSWORD`: PollEv account password.

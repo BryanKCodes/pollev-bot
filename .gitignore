@@ -116,3 +116,5 @@ setup.py
 # Browser captures can contain credentials, cookies, and private response data.
 *.har
 fixtures/raw/
+.venv-py314-backup/
+.pollev-auth/
