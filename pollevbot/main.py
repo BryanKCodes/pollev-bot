@@ -3,6 +3,7 @@ import argparse
 from dotenv import load_dotenv
 
 from pollevbot import PollBot
+from pollevbot.runtime_config import bot_options_from_env
 
 
 def main():
@@ -16,9 +17,13 @@ def main():
     password = os.getenv("PASSWORD", "") if login_type.lower() == 'nus' else os.environ["PASSWORD"]
     host = os.environ["POLLHOST"]
 
+    options = bot_options_from_env()
+    if args.check_login:
+        options['answer_mode'] = 'skip'
     with PollBot(user, password, host, login_type=login_type,
                  browser_profile=os.getenv('NUS_BROWSER_PROFILE'),
-                 login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300'))) as bot:
+                 login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
+                 **options) as bot:
         if args.check_login:
             bot.login()
             bot.get_firehose_token()

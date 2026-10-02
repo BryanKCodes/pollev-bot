@@ -1,8 +1,8 @@
 # pollevbot
 
 **pollevbot** is a bot that automatically responds to polls on [pollev.com](https://pollev.com/). 
-It continually checks if a specified host has opened any polls. Once a poll has been opened, 
-it submits a random response. 
+It continually checks if a specified host has opened any polls. Multiple-choice
+answers use random selection by default; a local model can be selected instead.
 
 Requires Python 3.7 or later.
 ## Dependencies
@@ -72,8 +72,8 @@ intended for a local computer with a desktop browser, not a Heroku dyno.
 ## Local answer provider
 
 The local LLM provider is available as `LlamaCppProvider` in
-`pollevbot.llama_cpp_provider`. It is not connected to the running bot yet;
-`PollBot` still uses its existing random multiple-choice path. Install the
+`pollevbot.llama_cpp_provider`. Set `ANSWER_MODE=llm` to use it in `PollBot`,
+or use `ANSWER_MODE=random` (the default) or `ANSWER_MODE=skip`. Install the
 optional inference dependency with `pip install -r requirements-local.txt`.
 Keep a GGUF instruct model outside this repository and set `LLM_MODEL_PATH` to
 its absolute path. The provider loads it on the first answer request, then
@@ -106,7 +106,35 @@ is skipped unless the random fallback is explicitly enabled. Open-ended text
 is cleaned and checked against the character limit before it can be used.
 The deadline can stop generation between tokens; it cannot interrupt one
 blocking native model operation. The exact Poll Everywhere open-ended fetch
-and submission route is still unverified, so this provider generates text only.
+and submission route is still unverified. The bot safely skips those activities
+unless a separately verified `OpenEndedTransport` is injected; it never guesses
+a submission URL or field.
+
+`PollBot` fetches and classifies each activity, then passes its cleaned question
+and ordered candidate text to the selected provider. `MIN_OPTION` and
+`MAX_OPTION` optionally filter the candidate list (zero-based, inclusive and
+exclusive respectively); the selected position is mapped to its original
+Poll Everywhere option ID before submission. Local LLM mode considers all
+options by default. The Heroku Scheduler launcher retains its older first-three
+options default in random mode; set `MAX_OPTION` to override it.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `ANSWER_MODE` | `random` | `llm`, `random`, or `skip`. |
+| `MIN_OPTION` | `0` | First candidate index. |
+| `MAX_OPTION` | all options | Exclusive end of candidate slice. |
+| `OPEN_WAIT` | `5` seconds | Delay before a new activity is answered (`10` on Heroku Scheduler). |
+| `CLOSED_WAIT` | `5` seconds | Delay between idle checks. |
+| `POLL_REQUEST_TIMEOUT` | `15` seconds | Fetch, CSRF, and submit request timeout. |
+| `POLL_RETRY_LIMIT` | `3` | Maximum attempts for fetch, generation, and explicit rate limits. |
+| `POLL_RETRY_BACKOFF` | `2` seconds | Initial retry delay, doubled per retry. |
+
+Only a confirmed submission is recorded as answered. Transient failures before
+submission receive bounded retries; a submission timeout or unclear server
+response is held as attempted and is not resent, to avoid duplicate answers.
+The `--check-login` command checks the connection without loading a model.
+The standard Heroku dependency set has no local inference package or GGUF
+model; `ANSWER_MODE=llm` needs a separately provisioned host with both.
 
 ## Heroku
 

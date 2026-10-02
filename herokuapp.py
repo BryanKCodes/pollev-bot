@@ -22,6 +22,7 @@ import os
 import logging
 from datetime import date
 from pollevbot import PollBot
+from pollevbot.runtime_config import bot_options_from_env
 
 required = {'USERNAME', 'PASSWORD', 'POLLHOST',
             'DAY_OF_WEEK', 'LOGIN_TYPE', 'LIFETIME'}
@@ -58,7 +59,8 @@ def main():
     if check_day():
         with PollBot(user, password, host,
                      login_type=login_type, lifetime=lifetime,
-                     max_option=3, open_wait=10) as bot:
+                     **bot_options_from_env(random_max_option=3,
+                                            default_open_wait=10)) as bot:
             bot.run()
     else:
         logger.info("pollevbot is not configured to run today. Exiting.")

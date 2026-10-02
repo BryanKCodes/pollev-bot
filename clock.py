@@ -23,6 +23,7 @@ import os
 import logging
 import pytz
 from pollevbot import PollBot
+from pollevbot.runtime_config import bot_options_from_env
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 required_vars = {'USERNAME', 'PASSWORD', 'POLLHOST', 'DAY_OF_WEEK',
@@ -41,7 +42,8 @@ def run():
     login_type = os.environ['LOGIN_TYPE']
     lifetime = float(os.environ['LIFETIME'])
 
-    with PollBot(user, password, host, login_type=login_type, lifetime=lifetime) as bot:
+    with PollBot(user, password, host, login_type=login_type,
+                 lifetime=lifetime, **bot_options_from_env()) as bot:
         bot.run()
 
 

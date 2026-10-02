@@ -25,6 +25,26 @@
             "description": "Login protocol to use (uw or pollev on Heroku; nus requires a local desktop browser)",
             "value": "uw"
         },
+        "ANSWER_MODE": {
+            "description": "Answer strategy: random, llm with a local GGUF model, or skip",
+            "value": "random"
+        },
+        "MIN_OPTION": {
+            "description": "Inclusive zero-based first multiple-choice option",
+            "value": "0"
+        },
+        "POLL_REQUEST_TIMEOUT": {
+            "description": "Timeout in seconds for activity, CSRF, and submit requests",
+            "value": "15"
+        },
+        "POLL_RETRY_LIMIT": {
+            "description": "Maximum safe attempts before skipping an activity",
+            "value": "3"
+        },
+        "POLL_RETRY_BACKOFF": {
+            "description": "Initial retry delay in seconds; later delays double",
+            "value": "2"
+        },
         "LIFETIME": {
             "description": "Time to run pollevbot before terminating (in seconds). Set to inf to run forever.",
             "value": "3600"
