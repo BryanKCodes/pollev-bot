@@ -69,6 +69,45 @@ to use another profile directory or
 contains session credentials and is ignored by Git. NUS browser sign-in is
 intended for a local computer with a desktop browser, not a Heroku dyno.
 
+## Local answer provider
+
+The local LLM provider is available as `LlamaCppProvider` in
+`pollevbot.llama_cpp_provider`. It is not connected to the running bot yet;
+`PollBot` still uses its existing random multiple-choice path. Install the
+optional inference dependency with `pip install -r requirements-local.txt`.
+Keep a GGUF instruct model outside this repository and set `LLM_MODEL_PATH` to
+its absolute path. The provider loads it on the first answer request, then
+reuses it in the process. A starting model to evaluate is
+[Qwen2.5-1.5B-Instruct GGUF, Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF).
+No model is downloaded automatically.
+
+The provider accepts these environment settings:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `LLM_BACKEND` | `llama_cpp` | The supported local backend. |
+| `LLM_MODEL_PATH` | required | Local GGUF file outside the repository. |
+| `LLM_CONTEXT_SIZE` | `2048` | Model context size. |
+| `LLM_THREADS` | half the CPU count | CPU inference threads. |
+| `LLM_GPU_LAYERS` | `0` | GPU layers; `-1` requests all layers. |
+| `LLM_MCQ_MAX_TOKENS` | `8` | Maximum tokens for a choice. |
+| `LLM_OPEN_MAX_TOKENS` | `64` | Maximum tokens for a text answer. |
+| `LLM_TEMPERATURE` | `0` | Sampling temperature. |
+| `LLM_INFERENCE_TIMEOUT` | `30` | Soft deadline between generated tokens, in seconds. |
+| `LLM_MAX_OPEN_CHARS` | `280` | Maximum cleaned text length. |
+| `LLM_FAILURE_POLICY` | `skip` | `skip` or explicit MCQ `random` fallback. |
+| `LLM_SEED` | `0` | Sampling seed. |
+
+For multiple choice, pass the same ordered, optionally sliced candidates to
+the provider and to `resolve_option_id` in `pollevbot.answer_validation`.
+The provider returns a position, never a Poll Everywhere option ID. Invalid
+model output is retried once with a stricter prompt; an invalid second answer
+is skipped unless the random fallback is explicitly enabled. Open-ended text
+is cleaned and checked against the character limit before it can be used.
+The deadline can stop generation between tokens; it cannot interrupt one
+blocking native model operation. The exact Poll Everywhere open-ended fetch
+and submission route is still unverified, so this provider generates text only.
+
 ## Heroku
 
 **pollevbot** can be scheduled to run at specific dates/times (UTC timezone) using [Heroku](http://heroku.com/):
