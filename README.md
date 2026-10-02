@@ -54,13 +54,20 @@ to use another profile directory or
 contains session credentials and is ignored by Git. NUS browser sign-in is
 intended for a local computer with a desktop browser, not a Heroku dyno.
 
-The connection check also requires a usable activity-feed token for the course
-host. A valid NUS sign-in alone does not prove that the Poll Everywhere account
-is registered with the presenter. If the check reports pre-registration is
-required, sign in with the account on the course roster or ask the presenter to
-register it. To sign in with a different account, set `NUS_BROWSER_PROFILE` to
-a new absolute directory outside this repository and rerun `--check-login`.
-See Poll Everywhere’s [participant registration guidance](https://support.polleverywhere.com/pe1/participants-cannot-self-register).
+The course may provide no activity-feed token while it is idle. In that case,
+`--check-login` verifies NUS sign-in but reports that live activity access is
+still unverified. When an active activity requires a check-in, the running bot
+opens its saved Chrome profile at the course page and waits. Complete the
+check-in there, including Chrome's real location permission if requested, then
+press Enter in the terminal. The bot checks the feed again before resuming. It
+does not set or emulate a location. This interactive step requires a local
+terminal and desktop Chrome; normal NUS SSO hosts continue without it.
+
+If the page says pre-registration is required and self-registration is disabled,
+sign in with the account on the course roster or ask the presenter to add it.
+Use a separate `NUS_BROWSER_PROFILE` for a different account or course. See
+Poll Everywhere’s [participant registration guidance](https://support.polleverywhere.com/pe1/participants-cannot-self-register)
+and [attendance check-in guidance](https://support.polleverywhere.com/pe1/getting-started-with-attendance-management-for-students-).
 
 ## Local answer provider
 

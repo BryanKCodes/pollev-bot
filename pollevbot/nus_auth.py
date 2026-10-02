@@ -6,6 +6,7 @@ into its requests session after sign-in.
 """
 
 import logging
+import sys
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -101,6 +102,7 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
         finally:
             context.close()
 
+
         try:
             context = playwright.chromium.launch_persistent_context(
                 str(profile), channel='chrome', headless=False)
@@ -150,5 +152,56 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
             raise NusLoginError(
                 'NUS sign-in did not establish a Poll Everywhere participant session '
                 'before the login timeout.')
+        finally:
+            context.close()
+
+
+def assist_host_check_in(session, host, verify, profile_dir=None,
+                         timeout=300):
+    """Let the participant complete a host check-in in real Chrome.
+
+    `verify` returns the feed token and any pending activity ID after the user
+    confirms the browser step, or None while the host still denies the feed.
+    No location is supplied or emulated by the bot.
+    """
+    if not sys.stdin.isatty():
+        raise NusLoginError('Host check-in needs an interactive terminal.')
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise NusLoginError('Host check-in needs Playwright.') from exc
+
+    profile = Path(profile_dir or Path(__file__).resolve().parent.parent / '.pollev-auth')
+    profile.mkdir(mode=0o700, parents=True, exist_ok=True)
+    profile.chmod(0o700)
+    with sync_playwright() as playwright:
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                str(profile), channel='chrome', headless=False)
+        except Exception as exc:
+            raise NusLoginError('Could not open Chrome for host check-in: {}'.format(exc)) from exc
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.goto(endpoints['home'].format(host=host),
+                          wait_until='domcontentloaded', timeout=30000)
+            except Exception as exc:
+                raise NusLoginError('Could not open the course page for check-in.') from exc
+            logger.info('Complete any host check-in in Chrome. If asked, allow '
+                        'Chrome to use your real location.')
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    input('Press Enter after the page confirms check-in (Ctrl+C to stop): ')
+                except EOFError as exc:
+                    raise NusLoginError('Host check-in needs terminal input.') from exc
+                _copy_participant_cookies(context, session)
+                result = verify()
+                if result is not None:
+                    logger.info('Course activity feed is accessible after browser check-in.')
+                    return result
+                logger.warning('The course activity feed still denies access. '
+                               'Check the Chrome page and retry.')
+            raise NusLoginError('Host check-in was not completed before the timeout.')
         finally:
             context.close()

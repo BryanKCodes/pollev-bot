@@ -118,4 +118,5 @@ setup.py
 fixtures/raw/
 .venv-py314-backup/
 .pollev-auth/
+.pollev-auth-hweetoung/
 *.gguf

@@ -28,8 +28,13 @@ def main():
                      **options) as bot:
             if args.check_login:
                 bot.login()
-                bot.get_firehose_token()
-                print('Poll Everywhere login and host connection verified.')
+                token = bot.get_firehose_token()
+                current_activity = bot.get_new_poll_id(token)
+                if token or current_activity:
+                    print('Poll Everywhere login and host activity feed verified.')
+                else:
+                    print('Poll Everywhere login verified; the host is idle, so '
+                          'live activity access is not yet verified.')
             else:
                 bot.run()
     except KeyboardInterrupt:

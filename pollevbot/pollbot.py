@@ -228,10 +228,11 @@ class PollBot:
             raise LoginError('Poll Everywhere login failed.')
         logger.info('Poll Everywhere identity session established; checking host access.')
 
-    def get_firehose_token(self) -> str:
+    def get_firehose_token(self) -> Optional[str]:
         from uuid import uuid4
-        self.session.cookies['pollev_visitor'] = str(uuid4())
-        self.session.cookies['pollev_visit'] = str(uuid4())
+        for name in ('pollev_visitor', 'pollev_visit'):
+            if name not in self.session.cookies:
+                self.session.cookies[name] = str(uuid4())
         url = endpoints['firehose_auth'].format(host=self.host,
                                                 timestamp=self.timestamp())
         response = self.session.get(url, timeout=self.request_timeout)
@@ -240,16 +241,10 @@ class PollBot:
         response.raise_for_status()
         registration = response.json()
         token = registration.get('firehose_token')
-        if not isinstance(token, str) or not token.strip():
-            if (registration.get('registration_suggested')
-                    and registration.get('participant_self_registration') is False):
-                raise LoginError(
-                    'This host requires pre-registration and does not allow '
-                    'self-registration. Sign in with the account on the course '
-                    'roster or ask the presenter to add it.')
-            raise LoginError(
-                'This account is not authorized for the course activity feed. '
-                'Check registration with the presenter and sign in with the registered account.')
+        if token is None or token == '':
+            return None
+        if not isinstance(token, str):
+            raise ValueError('The course activity-feed token has an invalid format.')
         return token
 
     def get_new_poll_id(self, firehose_token=None) -> Optional[str]:
@@ -483,14 +478,54 @@ class PollBot:
         logger.info('Polling host %s every %.1fs (answer mode: %s).',
                     self.host, self.closed_wait, self.answer_mode)
         next_status_at = time.monotonic() + _STATUS_INTERVAL
+        pending_poll_id = None
         try:
             while self.alive():
+                if token is None:
+                    try:
+                        token = self.get_firehose_token()
+                    except (ValueError, requests.RequestException) as exc:
+                        now = time.monotonic()
+                        if now >= self._next_firehose_warning_at:
+                            self._clear_idle_status()
+                            logger.warning('Could not refresh the course activity feed (%s).',
+                                           type(exc).__name__)
+                            self._next_firehose_warning_at = now + _STATUS_INTERVAL
+                        time.sleep(self.closed_wait)
+                        continue
                 try:
-                    poll_id = self.get_new_poll_id(token)
+                    poll_id = pending_poll_id or self.get_new_poll_id(token)
+                    pending_poll_id = None
                 except LoginError as exc:
                     self._clear_idle_status()
-                    logger.error('Polling stopped: %s', exc)
-                    break
+                    if self.login_type != 'nus':
+                        logger.error('Polling stopped: %s', exc)
+                        break
+                    from .nus_auth import assist_host_check_in
+
+                    def verify_check_in():
+                        try:
+                            new_token = self.get_firehose_token()
+                            candidate = self.get_new_poll_id(new_token)
+                        except LoginError:
+                            return None
+                        except (ValueError, requests.RequestException) as verify_error:
+                            logger.warning('Could not verify check-in yet (%s).',
+                                           type(verify_error).__name__)
+                            return None
+                        return new_token, candidate
+
+                    logger.warning('The course feed denied access; opening Chrome '
+                                   'for check-in or registration.')
+                    try:
+                        token, pending_poll_id = assist_host_check_in(
+                            self.session, self.host, verify_check_in,
+                            profile_dir=self.browser_profile,
+                            timeout=self.login_timeout)
+                    except NusLoginError as check_in_error:
+                        logger.error('Polling stopped: %s', check_in_error)
+                        break
+                    continue
                 if poll_id is None:
                     if not self._show_idle_status():
                         now = time.monotonic()

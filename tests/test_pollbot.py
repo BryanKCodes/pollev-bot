@@ -127,20 +127,18 @@ class PollBotDispatchTests(unittest.TestCase):
             bot.answer_poll('poll-1')
         self.assertEqual(len(session.calls), 3)
 
-    def test_missing_course_feed_token_is_a_connection_failure(self):
+    def test_missing_course_feed_token_is_valid_while_idle(self):
         session = FakeSession(get_results=[response(payload={'firehose_token': None})])
         bot = self.make_bot(session)
-        with self.assertRaisesRegex(LoginError, 'not authorized'):
-            bot.get_firehose_token()
+        self.assertIsNone(bot.get_firehose_token())
 
-    def test_pre_registration_failure_explains_course_roster(self):
+    def test_registration_flags_alone_do_not_imply_live_denial(self):
         session = FakeSession(get_results=[response(payload={
             'firehose_token': None,
             'registration_suggested': True,
             'participant_self_registration': False})])
         bot = self.make_bot(session)
-        with self.assertRaisesRegex(LoginError, 'course roster'):
-            bot.get_firehose_token()
+        self.assertIsNone(bot.get_firehose_token())
 
     def test_feed_subscription_denial_is_not_treated_as_idle(self):
         session = FakeSession(get_results=[response(payload={
@@ -328,6 +326,21 @@ class PollBotDispatchTests(unittest.TestCase):
             bot.run()
         self.assertEqual(bot.answered_polls, {'poll-13'})
         self.assertEqual(len([call for call in session.calls if call[0] == 'POST']), 1)
+
+    def test_nus_run_opens_browser_for_live_feed_check_in(self):
+        bot = PollBot('synthetic-user', '', 'test-host', login_type='nus',
+                      answer_mode='skip')
+        with patch.object(bot, 'login'), patch.object(
+                bot, 'get_firehose_token', return_value=None) as tokens, patch.object(
+                    bot, 'get_new_poll_id', side_effect=[
+                        LoginError('fixture denied'), None]), patch.object(
+                            bot, 'alive', side_effect=[True, True, False]), patch(
+                                'pollevbot.pollbot.time.sleep'), patch(
+                                    'pollevbot.nus_auth.assist_host_check_in',
+                                    return_value=(None, None)) as assist:
+            bot.run()
+        self.assertEqual(tokens.call_count, 3)
+        assist.assert_called_once()
 
 
 if __name__ == '__main__':

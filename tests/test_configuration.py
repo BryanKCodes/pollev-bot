@@ -61,6 +61,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(constructor.call_args.kwargs['login_type'], 'nus')
         instance.login.assert_called_once()
         instance.get_firehose_token.assert_called_once()
+        instance.get_new_poll_id.assert_called_once_with(
+            instance.get_firehose_token.return_value)
         instance.run.assert_not_called()
 
     def test_clock_and_scheduler_launchers_use_shared_environment(self):
