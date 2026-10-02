@@ -56,12 +56,15 @@ intended for a local computer with a desktop browser, not a Heroku dyno.
 
 The course may provide no activity-feed token while it is idle. In that case,
 `--check-login` verifies NUS sign-in but reports that live activity access is
-still unverified. When an active activity requires a check-in, the running bot
-opens its saved Chrome profile at the course page and waits. Complete the
-check-in there, including Chrome's real location permission if requested, then
-press Enter in the terminal. The bot checks the feed again before resuming. It
-does not set or emulate a location. This interactive step requires a local
-terminal and desktop Chrome; normal NUS SSO hosts continue without it.
+still unverified. Set `NUS_KEEP_BROWSER_OPEN=true` to open the saved Chrome
+profile at the course page as soon as polling starts and leave it visible until
+the bot stops. This is useful for hosts that present an attendance check-in.
+When an active activity requires check-in, complete it in that Chrome window,
+including Chrome's real location permission if requested, then press Enter in
+the terminal. The bot copies the browser session and checks the feed again
+before resuming. It does not set or emulate a location. This interactive step
+requires a local terminal and desktop Chrome. With the setting unset, the bot
+opens Chrome only when the active feed denies access.
 
 If the page says pre-registration is required and self-registration is disabled,
 sign in with the account on the course roster or ask the presenter to add it.

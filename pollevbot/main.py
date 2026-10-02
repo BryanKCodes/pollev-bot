@@ -24,6 +24,8 @@ def main():
     try:
         with PollBot(user, password, host, login_type=login_type,
                      browser_profile=os.getenv('NUS_BROWSER_PROFILE'),
+                     keep_browser_open=os.getenv('NUS_KEEP_BROWSER_OPEN', 'false').strip().lower()
+                     in ('1', 'true', 'yes', 'on'),
                      login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
                      **options) as bot:
             if args.check_login:

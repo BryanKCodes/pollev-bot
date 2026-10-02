@@ -342,6 +342,23 @@ class PollBotDispatchTests(unittest.TestCase):
         self.assertEqual(tokens.call_count, 3)
         assist.assert_called_once()
 
+    def test_nus_visible_browser_opens_while_idle_and_handles_check_in(self):
+        bot = PollBot('synthetic-user', '', 'test-host', login_type='nus',
+                      answer_mode='skip', keep_browser_open=True)
+        with patch.object(bot, 'login'), patch.object(
+                bot, 'get_firehose_token', return_value=None), patch.object(
+                    bot, 'get_new_poll_id', side_effect=[None, LoginError('denied')]), patch.object(
+                        bot, 'alive', side_effect=[True, True, False]), patch(
+                            'pollevbot.pollbot.time.sleep'), patch(
+                                'pollevbot.nus_auth.NusHostBrowser') as host_browser:
+            browser = host_browser.return_value.__enter__.return_value
+            browser.assist_check_in.return_value = (None, None)
+            bot.run()
+
+        host_browser.assert_called_once_with(bot.session, 'test-host', None)
+        self.assertEqual(browser.sync_cookies.call_count, 2)
+        browser.assist_check_in.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -64,7 +64,8 @@ class PollBot:
                  open_ended_transport: Optional[OpenEndedTransport] = None,
                  request_timeout: float = 15, retry_limit: int = 3,
                  retry_backoff: float = 2,
-                 max_open_chars: Optional[int] = None):
+                 max_open_chars: Optional[int] = None,
+                 keep_browser_open: bool = False):
         login_type = login_type.lower()
         if login_type not in {'uw', 'pollev', 'nus'}:
             raise ValueError('Unsupported login_type: {!r}'.format(login_type))
@@ -85,6 +86,7 @@ class PollBot:
         self.host = host
         self.login_type = login_type
         self.browser_profile = browser_profile
+        self.keep_browser_open = keep_browser_open
         self.login_timeout = login_timeout
         self.min_option = min_option
         self.max_option = max_option
@@ -466,6 +468,22 @@ class PollBot:
         """Poll the host until lifetime expires, with bounded safe retries."""
         try:
             self.login()
+            if self.login_type == 'nus' and self.keep_browser_open:
+                from .nus_auth import NusHostBrowser
+                with NusHostBrowser(self.session, self.host,
+                                    self.browser_profile) as browser:
+                    self._run_polling(browser)
+            else:
+                self._run_polling(None)
+        except LoginError as exc:
+            logger.error('Could not start polling: %s', exc)
+        except (NusLoginError, ValueError, requests.RequestException,
+                RetryablePollError) as exc:
+            logger.error('Could not start polling: %s', exc)
+
+    def _run_polling(self, browser):
+        """Poll with an optional visible NUS course page."""
+        try:
             token = self.get_firehose_token()
         except LoginError as exc:
             logger.error('Could not start polling: %s', exc)
@@ -481,6 +499,8 @@ class PollBot:
         pending_poll_id = None
         try:
             while self.alive():
+                if browser is not None:
+                    browser.sync_cookies()
                 if token is None:
                     try:
                         token = self.get_firehose_token()
@@ -515,13 +535,17 @@ class PollBot:
                             return None
                         return new_token, candidate
 
-                    logger.warning('The course feed denied access; opening Chrome '
-                                   'for check-in or registration.')
+                    logger.warning('The course feed denied access; complete '
+                                   'check-in or registration in Chrome.')
                     try:
-                        token, pending_poll_id = assist_host_check_in(
-                            self.session, self.host, verify_check_in,
-                            profile_dir=self.browser_profile,
-                            timeout=self.login_timeout)
+                        if browser is not None:
+                            token, pending_poll_id = browser.assist_check_in(
+                                verify_check_in, timeout=self.login_timeout)
+                        else:
+                            token, pending_poll_id = assist_host_check_in(
+                                self.session, self.host, verify_check_in,
+                                profile_dir=self.browser_profile,
+                                timeout=self.login_timeout)
                     except NusLoginError as check_in_error:
                         logger.error('Polling stopped: %s', check_in_error)
                         break
