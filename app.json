@@ -26,8 +26,12 @@
             "value": "uw"
         },
         "ANSWER_MODE": {
-            "description": "Answer strategy: random, llm with a local GGUF model, or skip",
+            "description": "Answer strategy: random, llm, theme with a local GGUF model, or skip",
             "value": "random"
+        },
+        "ANSWER_THEME": {
+            "description": "Course topic for theme mode; required when no interactive terminal is available",
+            "required": false
         },
         "MIN_OPTION": {
             "description": "Inclusive zero-based first multiple-choice option",
@@ -62,7 +66,7 @@
             "value": "llama_cpp"
         },
         "LLM_MODEL_PATH": {
-            "description": "Absolute path to a provisioned GGUF model; needed only in llm mode",
+            "description": "Absolute path to a provisioned GGUF model; needed in llm and theme modes",
             "required": false
         },
         "LLM_CONTEXT_SIZE": {

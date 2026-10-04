@@ -14,7 +14,7 @@ def bot_options_from_env(env: Optional[Mapping[str, str]] = None,
         max_option = random_max_option if mode == 'random' else None
     else:
         max_option = int(max_option)
-    return {
+    options = {
         'answer_mode': mode,
         'min_option': int(values.get('MIN_OPTION', '0')),
         'max_option': max_option,
@@ -24,3 +24,6 @@ def bot_options_from_env(env: Optional[Mapping[str, str]] = None,
         'retry_limit': int(values.get('POLL_RETRY_LIMIT', '3')),
         'retry_backoff': float(values.get('POLL_RETRY_BACKOFF', '2')),
     }
+    if mode == 'theme' and values.get('ANSWER_THEME'):
+        options['answer_theme'] = values['ANSWER_THEME']
+    return options

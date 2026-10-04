@@ -16,6 +16,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .answer_providers import LegacyRandomProvider
 from .answer_validation import (InvalidAnswer, clean_open_ended_answer,
+                                clean_theme_answer,
                                 parse_option_selection)
 from .answerer import AnswerProvider, OptionSelection, TextAnswer
 
@@ -263,3 +264,53 @@ class LlamaCppProvider(AnswerProvider):
                 break
         logger.warning('No validated open-ended model answer: %s', reason)
         raise AnswerUnavailable('No validated open-ended answer.')
+
+
+class ThemeProvider(LlamaCppProvider):
+    """Generate a short theme phrase when the presenter hides the prompt.
+
+    Multiple-choice answers retain the legacy random behavior; there is no
+    question text from which to judge them in this mode.
+    """
+
+    def __init__(self, config: LlamaCppConfig, theme: str):
+        if not isinstance(theme, str) or not 1 <= len(theme.strip()) <= 120:
+            raise ModelConfigurationError('ANSWER_THEME must contain 1 to 120 characters.')
+        super().__init__(config)
+        self.theme = ' '.join(theme.split())
+
+    @classmethod
+    def from_env(cls, theme: str, env: Optional[Mapping[str, str]] = None) -> 'ThemeProvider':
+        return cls(LlamaCppConfig.from_env(env), theme)
+
+    def select_option(self, question: str,
+                      options: Sequence[str]) -> OptionSelection:
+        return self._random_fallback.select_option(question, options)
+
+    def answer_open_ended(self, question: str) -> TextAnswer:
+        context = ('Question visible to participant: {}\n'.format(question)
+                   if isinstance(question, str) and question.strip() else '')
+        for attempt in range(2):
+            instruction = ('Return exactly a two or three word phrase related to the '
+                           'given course theme. If a question is shown, make the phrase '
+                           'fit it. No punctuation, labels, or explanation.')
+            if attempt:
+                instruction = ('Output only two or three topic words separated by spaces. '
+                               'No full sentence, punctuation, or extra text.')
+            messages = [
+                {'role': 'system', 'content': instruction},
+                {'role': 'user', 'content': '{}Course theme: {}'.format(context, self.theme)},
+            ]
+            try:
+                raw = self._complete(messages, min(16, self.config.open_max_tokens), 80)
+                return TextAnswer(clean_theme_answer(
+                    raw, min(64, self.config.max_open_chars)))
+            except InvalidAnswer as exc:
+                reason = str(exc)
+                if attempt == 0:
+                    continue
+            except InferenceFailed as exc:
+                reason = str(exc)
+                break
+        logger.warning('No validated theme phrase: %s', reason)
+        raise AnswerUnavailable('No validated theme phrase.')

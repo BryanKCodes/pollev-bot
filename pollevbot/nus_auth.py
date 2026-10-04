@@ -177,6 +177,7 @@ class NusHostBrowser:
         self.profile_dir = profile_dir
         self.playwright = None
         self.context = None
+        self.page = None
         self._last_cookies = None
 
     def __enter__(self):
@@ -192,9 +193,9 @@ class NusHostBrowser:
         try:
             self.context = self.playwright.chromium.launch_persistent_context(
                 str(profile), channel='chrome', headless=False)
-            page = self.context.pages[0] if self.context.pages else self.context.new_page()
-            page.goto(endpoints['home'].format(host=self.host),
-                      wait_until='domcontentloaded', timeout=30000)
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            self.page.goto(endpoints['home'].format(host=self.host),
+                           wait_until='domcontentloaded', timeout=30000)
             self.sync_cookies()
         except Exception as exc:
             self.__exit__(None, None, None)
@@ -212,6 +213,7 @@ class NusHostBrowser:
                     logger.debug('Chrome context already closed: %s', type(exc).__name__)
         finally:
             self.context = None
+            self.page = None
             if self.playwright is not None:
                 try:
                     self.playwright.stop()
@@ -233,6 +235,76 @@ class NusHostBrowser:
                 self._last_cookies = signature
         except Exception as exc:
             raise NusLoginError('Could not read the course browser session.') from exc
+
+    def _text_response_form(self):
+        """Find the visible, unanswered text form on the participant page."""
+        if self.page is None:
+            return None
+        for frame in self.page.frames:
+            field = frame.get_by_placeholder('Type here...', exact=True)
+            submit = frame.get_by_role('button', name='Submit', exact=True)
+            if field.count() != 1 or submit.count() != 1 or not field.is_visible():
+                continue
+            body = frame.locator('body').inner_text(timeout=2000)
+            if 'You have not responded' not in body:
+                continue
+            if 'Activity title hidden' in body:
+                question = ''
+            else:
+                headings = frame.locator('h1, h2').all_inner_texts()
+                question = next((text.strip() for text in headings if text.strip()), '')
+            return field, submit, question
+        return None
+
+    def visible_text_question(self):
+        """Return visible question text, empty for a hidden title, or None."""
+        try:
+            form = self._text_response_form()
+        except Exception as exc:
+            raise NusLoginError('Could not inspect the course response form.') from exc
+        return None if form is None else form[2]
+
+    def submit_visible_text(self, text, expected_question):
+        """Submit through the actual participant form and observe its response."""
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+            form = self._text_response_form()
+            if form is None or form[2] != expected_question:
+                raise NusLoginError('The visible text activity changed before submission.')
+            field, submit, _ = form
+            field.fill(text, timeout=5000)
+            if not submit.is_enabled():
+                raise NusLoginError('The text activity submit button is disabled.')
+
+            def is_submission(response):
+                parsed = urlparse(response.url)
+                host = parsed.hostname or ''
+                return ((host == 'pollev.com' or host.endswith('.polleverywhere.com'))
+                        and response.request.method == 'POST'
+                        and ('/results' in parsed.path or '/responses' in parsed.path))
+
+            try:
+                with self.page.expect_response(is_submission, timeout=10000) as event:
+                    submit.click(timeout=5000)
+                response = event.value
+            except PlaywrightTimeoutError as exc:
+                raise NusLoginError('Could not confirm the browser submission.') from exc
+            if not response.ok:
+                raise NusLoginError('Browser submission returned HTTP {}.'.format(
+                    response.status))
+            try:
+                payload = response.json()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and (payload.get('error') or
+                                               payload.get('errors') or
+                                               payload.get('success') is False):
+                raise NusLoginError('Browser submission was rejected.')
+            return {'browser_submission': True}
+        except NusLoginError:
+            raise
+        except Exception as exc:
+            raise NusLoginError('Could not submit the visible text activity.') from exc
 
     def assist_check_in(self, verify, timeout=300):
         """Wait for manual check-in, then verify the feed before resuming."""

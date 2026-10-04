@@ -76,3 +76,16 @@ def clean_open_ended_answer(raw: str, max_chars: int) -> str:
     if len(text) > max_chars:
         raise InvalidAnswer('text_too_long')
     return text
+
+
+def clean_theme_answer(raw: str, max_chars: int = 64) -> str:
+    """Require one plain two or three word phrase for a theme response."""
+    if not isinstance(raw, str):
+        raise InvalidAnswer('invalid_theme_text')
+    text = ' '.join(raw.strip().split())
+    words = text.split(' ')
+    if (len(text) > max_chars or len(words) not in (2, 3)
+            or any(not re.fullmatch(r"[\w]+(?:[-/'][\w]+)*", word, re.UNICODE)
+                   for word in words)):
+        raise InvalidAnswer('invalid_theme_phrase')
+    return text

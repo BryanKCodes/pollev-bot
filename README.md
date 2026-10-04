@@ -75,9 +75,16 @@ and [attendance check-in guidance](https://support.polleverywhere.com/pe1/gettin
 ## Local answer provider
 
 The local LLM provider is available as `LlamaCppProvider` in
-`pollevbot.llama_cpp_provider`. Set `ANSWER_MODE=llm` to use it in `PollBot`,
-or use `ANSWER_MODE=random` (the default) or `ANSWER_MODE=skip`. Install the
-optional inference dependency with `pip install -r requirements-local.txt`.
+`pollevbot.llama_cpp_provider`. Run `python -m pollevbot.main` in a terminal to
+choose `1` for LLM, `2` for theme, or `3` for random. Theme mode then asks for a
+course topic such as `nlp transformers`; the model generates a plain two or
+three word phrase for a visible text response form. `ANSWER_MODE` sets the
+menu default and selects the mode in noninteractive launchers. `ANSWER_THEME`
+supplies a default theme or the required value for noninteractive theme mode.
+Use `--mode` and `--theme` to bypass the prompts. `--check-login` never prompts
+or answers. NUS theme mode keeps the course browser open so the bot can use its
+visible text form. Install the optional inference dependency with
+`pip install -r requirements-local.txt`.
 Keep a GGUF instruct model outside this repository and set `LLM_MODEL_PATH` to
 its absolute path. The provider loads it on the first answer request, then
 reuses it in the process. A starting model to evaluate is
@@ -115,16 +122,22 @@ reuse the saved browser profile while its session remains valid.
 The terminal reports when polling starts, then refreshes one timestamped idle
 status line after each check without adding lines to the scrollback. Output
 redirected to a file gets one idle update about every minute instead. When an
-activity arrives, the bot prints the question, the
+activity arrives, the bot prints the available question, the
 selected option or generated text, and whether Poll Everywhere accepted the
 response. It reports retries and skips, and distinguishes an uncertain
 submission from an accepted one. Press Ctrl+C to stop. An activity is answered
 at most once during a single bot run; this bookkeeping is in memory, so a new
 run does not remember which activity IDs the previous run handled.
 For multiple-choice activities, the bot logs the title supplied to the
-participant endpoint before asking the model for an answer. If that endpoint
-does not supply question text, LLM mode skips the activity. Presenter-only text
-cannot be inferred from answer options.
+participant endpoint before asking the model for an answer. If the question
+is hidden, LLM mode chooses a random option. Theme mode also uses random
+selection for multiple choice. Presenter-only text cannot be inferred from
+answer options. For a text activity whose participant API route is unavailable,
+LLM or theme mode can use the visible Chrome response form. LLM mode requires a
+visible question; theme mode can use a hidden-title form. The bot confirms the
+current activity ID again before clicking Submit and never retries an uncertain
+browser submission. This browser workflow is specific to the current form's
+visible labels and has not yet been exercised against a live text submission.
 
 The provider accepts these environment settings:
 
@@ -151,9 +164,10 @@ is skipped unless the random fallback is explicitly enabled. Open-ended text
 is cleaned and checked against the character limit before it can be used.
 The deadline can stop generation between tokens; it cannot interrupt one
 blocking native model operation. The exact Poll Everywhere open-ended fetch
-and submission route is still unverified. The bot safely skips those activities
-unless a separately verified `OpenEndedTransport` is injected; it never guesses
-a submission URL or field.
+and submission route is still unverified. When the saved NUS Chrome page shows
+one unanswered text form, the bot uses that form rather than guessing a private
+submission URL. Otherwise it skips the activity unless a separately verified
+`OpenEndedTransport` is injected.
 
 `PollBot` fetches and classifies each activity, then passes its cleaned question
 and ordered candidate text to the selected provider. `MIN_OPTION` and
@@ -165,7 +179,8 @@ options default in random mode; set `MAX_OPTION` to override it.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `ANSWER_MODE` | `random` | `llm`, `random`, or `skip`. |
+| `ANSWER_MODE` | `random` | Menu default or noninteractive mode: `llm`, `theme`, `random`, or `skip`. |
+| `ANSWER_THEME` | unset | Default theme prompt; required for noninteractive theme mode. |
 | `MIN_OPTION` | `0` | First candidate index. |
 | `MAX_OPTION` | all options | Exclusive end of candidate slice. |
 | `OPEN_WAIT` | `5` seconds | Delay before a new activity is answered (`10` on Heroku Scheduler). |
