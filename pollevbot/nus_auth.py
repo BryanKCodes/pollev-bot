@@ -1,7 +1,7 @@
 """Interactive NUS SSO for the Poll Everywhere participant site.
 
-NUS uses Microsoft sign-in and MFA. A dedicated Chrome profile keeps that
-session between runs; the bot copies only Poll Everywhere participant cookies
+NUS uses Microsoft sign-in and MFA. A Chrome profile keeps that
+session for the current run; the bot copies only Poll Everywhere participant cookies
 into its requests session after sign-in.
 """
 
@@ -73,7 +73,8 @@ def _session_state(context, session):
     return _identity_logged_in(context), _participant_session_present(session)
 
 
-def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
+def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
+          force_interactive=False, cancel_event=None):
     """Sign in through NUS and connect the browser session to ``session``.
 
     ``exchange_token`` receives a Poll Everywhere participant auth token if
@@ -90,18 +91,20 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
     profile.mkdir(mode=0o700, parents=True, exist_ok=True)
     profile.chmod(0o700)
     with sync_playwright() as playwright:
-        try:
-            context = playwright.chromium.launch_persistent_context(
-                str(profile), channel='chrome', headless=True)
-        except Exception as exc:
-            raise NusLoginError('Could not open Chrome for NUS SSO: {}'.format(exc)) from exc
-        try:
-            if all(_session_state(context, session)):
-                logger.info('Reused the NUS browser identity session.')
-                return
-        finally:
-            context.close()
-
+        if cancel_event is not None and cancel_event.is_set():
+            raise NusLoginError('Sign-in cancelled.')
+        if not force_interactive:
+            try:
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile), channel='chrome', headless=True)
+            except Exception as exc:
+                raise NusLoginError('Could not open Chrome for NUS SSO: {}'.format(exc)) from exc
+            try:
+                if all(_session_state(context, session)):
+                    logger.info('Reused the NUS browser identity session.')
+                    return
+            finally:
+                context.close()
 
         try:
             context = playwright.chromium.launch_persistent_context(
@@ -130,6 +133,8 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
             attempted_token = None
             prompted_for_name = False
             while time.monotonic() < deadline:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise NusLoginError('Sign-in cancelled.')
                 if auth_token[0] and auth_token[0] != attempted_token:
                     attempted_token = auth_token[0]
                     if exchange_token:
@@ -157,7 +162,7 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None):
 
 
 def assist_host_check_in(session, host, verify, profile_dir=None,
-                         timeout=300):
+                         timeout=300, confirm=None, cancel_event=None):
     """Let the participant complete a host check-in in real Chrome.
 
     `verify` returns the feed token and any pending activity ID after the user
@@ -165,7 +170,7 @@ def assist_host_check_in(session, host, verify, profile_dir=None,
     No location is supplied or emulated by the bot.
     """
     with NusHostBrowser(session, host, profile_dir) as browser:
-        return browser.assist_check_in(verify, timeout)
+        return browser.assist_check_in(verify, timeout, confirm, cancel_event)
 
 
 class NusHostBrowser:
@@ -306,16 +311,22 @@ class NusHostBrowser:
         except Exception as exc:
             raise NusLoginError('Could not submit the visible text activity.') from exc
 
-    def assist_check_in(self, verify, timeout=300):
+    def assist_check_in(self, verify, timeout=300, confirm=None, cancel_event=None):
         """Wait for manual check-in, then verify the feed before resuming."""
-        if not sys.stdin.isatty():
+        if confirm is None and not sys.stdin.isatty():
             raise NusLoginError('Host check-in needs an interactive terminal.')
         logger.info('Complete any host check-in in Chrome. If asked, allow '
                     'Chrome to use your real location.')
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise NusLoginError('Check-in cancelled.')
             try:
-                input('Press Enter after the page confirms check-in (Ctrl+C to stop): ')
+                if confirm is not None:
+                    if not confirm(deadline):
+                        raise NusLoginError('Check-in cancelled or timed out.')
+                else:
+                    input('Press Enter after the page confirms check-in (Ctrl+C to stop): ')
             except EOFError as exc:
                 raise NusLoginError('Host check-in needs terminal input.') from exc
             self.sync_cookies()

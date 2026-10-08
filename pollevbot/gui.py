@@ -1,0 +1,319 @@
+"""Local desktop launcher. All browser and polling work runs off the Tk thread."""
+
+import logging
+import os
+import queue
+import subprocess
+import sys
+import threading
+import time
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
+
+from dotenv import load_dotenv
+
+from .launcher_settings import ENV_PATH, LauncherSettings
+from .model_setup import DEFAULT_MODEL_PATH, download_model, resolve_model_path
+from .pollbot import PollBot
+from .runtime_config import bot_options_from_env
+
+
+class QueueLogHandler(logging.Handler):
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+        self.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', '%H:%M:%S'))
+
+    def emit(self, record):
+        self.events.put(('log', self.format(record)))
+
+
+class Launcher:
+    def __init__(self, root):
+        self.root = root
+        root.title('Poll Everywhere · Local bot')
+        root.geometry('680x720')
+        root.minsize(600, 630)
+        self.events = queue.Queue()
+        self.worker = None
+        self.stop_event = threading.Event()
+        self.confirm_event = threading.Event()
+        self.closing = False
+        settings = LauncherSettings.load()
+        self.host = tk.StringVar(value=settings.host)
+        self.mode = tk.StringVar(value=settings.mode.title() if settings.mode != 'llm' else 'LLM')
+        self.theme = tk.StringVar(value=settings.theme)
+        self.duration = tk.StringVar(value=format(settings.duration, 'g'))
+        self.unit = tk.StringVar(value=settings.unit)
+        self.keep_browser = tk.BooleanVar(value=settings.keep_browser_open)
+        self.model_path = settings.model_path
+        self.gpu_layers = settings.gpu_layers
+        self.status = tk.StringVar(value='Ready. Choose your settings, then Start.')
+        self.model_status = tk.StringVar()
+        self.handler = QueueLogHandler(self.events)
+        logging.getLogger('pollevbot').addHandler(self.handler)
+        self._build()
+        self.mode.trace_add('write', self._mode_changed)
+        self._mode_changed()
+        self._refresh_model()
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        root.after(100, self._drain_events)
+
+    def _build(self):
+        style = ttk.Style(self.root)
+        style.configure('Title.TLabel', font=('Helvetica', 23, 'bold'))
+        style.configure('Hint.TLabel', foreground='#666666')
+        outer = ttk.Frame(self.root, padding=24)
+        outer.pack(fill='both', expand=True)
+        ttk.Label(outer, text='Poll Everywhere', style='Title.TLabel').pack(anchor='w')
+        ttk.Label(outer, text='Sign in with NUS in Chrome each time you start.',
+                  style='Hint.TLabel').pack(anchor='w', pady=(6, 20))
+        form = ttk.Frame(outer)
+        form.pack(fill='x')
+        form.columnconfigure(1, weight=1)
+        self.inputs = []
+
+        def label(text, row):
+            ttk.Label(form, text=text).grid(row=row, column=0, sticky='w', padx=(0, 18), pady=9)
+
+        label('Presenter / host', 0)
+        host_entry = ttk.Entry(form, textvariable=self.host)
+        host_entry.grid(row=0, column=1, sticky='ew')
+        self.inputs.append((host_entry, 'normal'))
+        label('Answer mode', 1)
+        mode = ttk.Combobox(form, textvariable=self.mode, values=('LLM', 'Theme', 'Random'), state='readonly')
+        mode.grid(row=1, column=1, sticky='ew')
+        self.inputs.append((mode, 'readonly'))
+        self.theme_label = ttk.Label(form, text='Course theme')
+        self.theme_label.grid(row=2, column=0, sticky='w', pady=9)
+        self.theme_entry = ttk.Entry(form, textvariable=self.theme)
+        self.theme_entry.grid(row=2, column=1, sticky='ew')
+        self.inputs.append((self.theme_entry, 'normal'))
+        label('Run for', 3)
+        duration_row = ttk.Frame(form)
+        duration_row.grid(row=3, column=1, sticky='ew')
+        duration = ttk.Entry(duration_row, textvariable=self.duration, width=10)
+        duration.pack(side='left', padx=(0, 8))
+        units = ttk.Combobox(duration_row, textvariable=self.unit, values=('minutes', 'hours'),
+                             state='readonly', width=12)
+        units.pack(side='left')
+        self.inputs.extend(((duration, 'normal'), (units, 'readonly')))
+        keep = ttk.Checkbutton(outer, text='Keep the course browser open while polling', variable=self.keep_browser)
+        keep.pack(anchor='w', pady=(16, 5))
+        self.inputs.append((keep, 'normal'))
+        ttk.Label(outer, text='Otherwise Chrome opens only for login, check-in, or a text response.',
+                  style='Hint.TLabel', wraplength=600).pack(anchor='w')
+        model = ttk.LabelFrame(outer, text='Local model · needed for LLM and Theme', padding=10)
+        model.pack(fill='x', pady=16)
+        ttk.Label(model, textvariable=self.model_status, wraplength=560).pack(anchor='w')
+        model_actions = ttk.Frame(model)
+        model_actions.pack(fill='x', pady=(8, 0))
+        self.download_button = ttk.Button(model_actions, text='Download Qwen model (1.12 GB)', command=self.download)
+        self.download_button.pack(side='left')
+        self.browse_button = ttk.Button(model_actions, text='Choose GGUF…', command=self.browse)
+        self.browse_button.pack(side='left', padx=8)
+        self.inputs.append((self.browse_button, 'normal'))
+        actions = ttk.Frame(outer)
+        actions.pack(fill='x')
+        self.start_button = ttk.Button(actions, text='Start', command=self.start)
+        self.start_button.pack(side='left')
+        self.stop_button = ttk.Button(actions, text='Stop', command=self.stop, state='disabled')
+        self.stop_button.pack(side='left', padx=8)
+        self.save_button = ttk.Button(actions, text='Save settings', command=self.save)
+        self.save_button.pack(side='left')
+        self.check_button = ttk.Button(actions, text='I checked in', command=self.confirm, state='disabled')
+        self.check_button.pack(side='right')
+        ttk.Label(outer, textvariable=self.status, wraplength=600).pack(anchor='w', pady=14)
+        self.logs = ScrolledText(outer, height=10, font=('Menlo', 11), wrap='word', state='disabled')
+        self.logs.pack(fill='both', expand=True)
+        host_entry.focus_set()
+
+    def _mode_changed(self, *_):
+        if self.mode.get() == 'Theme':
+            self.theme_label.grid()
+            self.theme_entry.grid()
+        else:
+            self.theme_label.grid_remove()
+            self.theme_entry.grid_remove()
+
+    def _refresh_model(self):
+        path = resolve_model_path(self.model_path)
+        ready = path.is_file() and path.suffix.lower() == '.gguf'
+        self.model_status.set(('Ready: ' if ready else 'Missing: ') + path.name)
+        self.download_button.configure(state='disabled' if ready else 'normal')
+
+    def _settings(self):
+        try:
+            duration = float(self.duration.get())
+        except ValueError as exc:
+            raise ValueError('Enter a number for the duration.') from exc
+        return LauncherSettings(self.host.get(), self.mode.get().lower(), self.theme.get(),
+                                duration, self.unit.get(), self.keep_browser.get(),
+                                self.model_path, self.gpu_layers).validate()
+
+    def save(self):
+        try:
+            self._settings().save()
+            self.status.set('Settings saved. Passwords are entered only in Chrome.')
+        except (ValueError, OSError) as exc:
+            messagebox.showerror('Settings', str(exc), parent=self.root)
+
+    def browse(self):
+        path = filedialog.askopenfilename(parent=self.root, title='Choose a GGUF instruct model',
+                                          filetypes=(('GGUF model', '*.gguf'),))
+        if path:
+            self.model_path = path
+            self._refresh_model()
+
+    def _busy(self, busy):
+        for widget, state in self.inputs:
+            widget.configure(state='disabled' if busy else state)
+        self.start_button.configure(state='disabled' if busy else 'normal')
+        self.save_button.configure(state='disabled' if busy else 'normal')
+        self.stop_button.configure(state='normal' if busy else 'disabled')
+        if busy:
+            self.download_button.configure(state='disabled')
+        else:
+            self._refresh_model()
+
+    def start(self):
+        if self.worker is not None:
+            return
+        try:
+            settings = self._settings()
+            if settings.mode != 'random':
+                from .llama_cpp_provider import LlamaCppConfig
+                load_dotenv(ENV_PATH, override=True)
+                LlamaCppConfig.from_env({'LLM_MODEL_PATH': settings.model_path,
+                                         'LLM_GPU_LAYERS': str(settings.gpu_layers)})
+                import llama_cpp  # Confirm the inference dependency before sign-in.
+            import playwright.sync_api
+            settings.save()
+        except (ValueError, OSError, ImportError) as exc:
+            messagebox.showerror('Could not start', str(exc), parent=self.root)
+            return
+        self.stop_event.clear()
+        self.confirm_event.clear()
+        self._busy(True)
+        self.status.set('Opening Chrome for NUS sign-in and MFA…')
+        self.worker = threading.Thread(target=self._run_bot, args=(settings,), daemon=True)
+        self.worker.start()
+
+    def _run_bot(self, settings):
+        awake = None
+        try:
+            if sys.platform == 'darwin':
+                try:
+                    awake = subprocess.Popen(['caffeinate', '-i'])
+                except OSError:
+                    logging.getLogger(__name__).warning('Keep your computer awake while polling.')
+            load_dotenv(ENV_PATH, override=True)
+            options = bot_options_from_env()
+            with PollBot('', '', settings.host, login_type='nus', lifetime=settings.lifetime,
+                         keep_browser_open=settings.keep_browser_open,
+                         login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
+                         stop_event=self.stop_event,
+                         status_callback=lambda text: self.events.put(('status', text)),
+                         check_in_confirm=self._wait_for_check_in, **options) as bot:
+                bot.run()
+        except Exception as exc:
+            self.events.put(('log', 'Could not run: {}'.format(exc)))
+        finally:
+            if awake is not None:
+                awake.terminate()
+                awake.wait()
+            self.events.put(('done', 'Stopped. See the event log for details. Start opens a fresh sign-in.'))
+
+    def _wait_for_check_in(self, deadline):
+        self.confirm_event.clear()
+        self.events.put(('check_in', 'Complete check-in in Chrome, then click “I checked in”.'))
+        while not self.stop_event.is_set() and time.monotonic() < deadline:
+            if self.confirm_event.wait(min(0.2, max(0, deadline - time.monotonic()))):
+                self.events.put(('check_done', 'Checking course access…'))
+                return True
+        self.events.put(('check_done', 'Check-in cancelled or timed out.'))
+        return False
+
+    def confirm(self):
+        self.check_button.configure(state='disabled')
+        self.confirm_event.set()
+
+    def stop(self):
+        self.stop_event.set()
+        self.status.set('Stopping… waiting for the current browser, request, or generation to finish.')
+        self.stop_button.configure(state='disabled')
+        self.check_button.configure(state='disabled')
+
+    def download(self):
+        if self.worker is not None:
+            return
+        self.stop_event.clear()
+        self._busy(True)
+        self.status.set('Downloading Qwen from its publisher…')
+
+        def run():
+            try:
+                download_model(lambda size, total: self.events.put(('status',
+                    'Downloading model: {:.0f} MB{}'.format(size / 1_000_000,
+                    ' / {:.0f} MB'.format(total / 1_000_000) if total else ''))), self.stop_event)
+                self.events.put(('model_ready', DEFAULT_MODEL_PATH))
+                self.events.put(('done', 'Model downloaded and checksum verified. Ready to Start.'))
+            except Exception as exc:
+                self.events.put(('log', str(exc)))
+                self.events.put(('done', 'Model download stopped.'))
+        self.worker = threading.Thread(target=run, daemon=True)
+        self.worker.start()
+
+    def _drain_events(self):
+        try:
+            while True:
+                kind, value = self.events.get_nowait()
+                if kind == 'log':
+                    self.logs.configure(state='normal')
+                    self.logs.insert('end', value + '\n')
+                    # Keep a bounded event history for long sessions.
+                    lines = int(self.logs.index('end-1c').split('.')[0])
+                    if lines > 600:
+                        self.logs.delete('1.0', '{}.0'.format(lines - 500))
+                    self.logs.see('end')
+                    self.logs.configure(state='disabled')
+                    self.status.set(value)
+                elif kind in ('status', 'check_in', 'check_done'):
+                    self.status.set(value)
+                    if kind == 'check_in':
+                        self.check_button.configure(state='normal')
+                    elif kind == 'check_done':
+                        self.check_button.configure(state='disabled')
+                elif kind == 'model_ready':
+                    self.model_path = value
+                elif kind == 'done':
+                    self.worker = None
+                    self._busy(False)
+                    self.check_button.configure(state='disabled')
+                    self.status.set(value)
+        except queue.Empty:
+            pass
+        if self.closing and self.worker is None:
+            logging.getLogger('pollevbot').removeHandler(self.handler)
+            self.root.destroy()
+            return
+        self.root.after(100, self._drain_events)
+
+    def close(self):
+        self.closing = True
+        if self.worker is not None:
+            self.stop()
+        else:
+            logging.getLogger('pollevbot').removeHandler(self.handler)
+            self.root.destroy()
+
+
+def main():
+    root = tk.Tk()
+    Launcher(root)
+    root.mainloop()
+
+
+if __name__ == '__main__':
+    main()

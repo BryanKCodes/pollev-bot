@@ -2,8 +2,10 @@
 
 import json
 import logging
+import math
 import shutil
 import sys
+import tempfile
 import time
 from typing import Optional
 
@@ -68,7 +70,9 @@ class PollBot:
                  retry_backoff: float = 2,
                  max_open_chars: Optional[int] = None,
                  keep_browser_open: bool = False,
-                 answer_theme: Optional[str] = None):
+                 answer_theme: Optional[str] = None,
+                 stop_event=None, status_callback=None,
+                 check_in_confirm=None):
         login_type = login_type.lower()
         if login_type not in {'uw', 'pollev', 'nus'}:
             raise ValueError('Unsupported login_type: {!r}'.format(login_type))
@@ -79,6 +83,10 @@ class PollBot:
             raise ValueError('answer_theme is required for theme mode')
         if not isinstance(retry_limit, int) or isinstance(retry_limit, bool) or retry_limit < 1:
             raise ValueError('retry_limit must be a positive integer')
+        if lifetime <= 0 or math.isnan(lifetime):
+            raise ValueError('lifetime must be positive seconds')
+        if not math.isfinite(login_timeout) or login_timeout <= 0:
+            raise ValueError('login_timeout must be positive seconds')
         if (request_timeout <= 0 or retry_backoff < 0 or closed_wait <= 0
                 or open_wait < 0
                 or (max_open_chars is not None and max_open_chars < 1)):
@@ -92,8 +100,11 @@ class PollBot:
         self.host = host
         self.login_type = login_type
         self.browser_profile = browser_profile
-        self.keep_browser_open = keep_browser_open or (answer_mode == 'theme'
-                                                     and login_type == 'nus')
+        self._temporary_profile = None
+        self.keep_browser_open = keep_browser_open
+        self.stop_event = stop_event
+        self.status_callback = status_callback
+        self.check_in_confirm = check_in_confirm
         self.login_timeout = login_timeout
         self.min_option = min_option
         self.max_option = max_option
@@ -141,10 +152,13 @@ class PollBot:
 
     def _show_idle_status(self) -> bool:
         """Refresh one terminal line after a check with no new activity."""
-        if not sys.stderr.isatty():
-            return False
         message = '{} Polling host {}; no new activity handled.'.format(
             time.strftime('%H:%M:%S'), self.host)
+        if self.status_callback is not None:
+            self.status_callback(message)
+            return True
+        if not sys.stderr.isatty():
+            return False
         width = shutil.get_terminal_size(fallback=(80, 24)).columns
         sys.stderr.write('\r\x1b[2K' + _preview(message, max(2, width - 1)))
         sys.stderr.flush()
@@ -161,7 +175,13 @@ class PollBot:
         return self
 
     def __exit__(self, *args):
-        self.session.close()
+        try:
+            self.session.close()
+        finally:
+            if self._temporary_profile is not None:
+                self._temporary_profile.cleanup()
+                self._temporary_profile = None
+                self.browser_profile = None
 
     @staticmethod
     def timestamp() -> float:
@@ -230,9 +250,14 @@ class PollBot:
     def login(self):
         if self.login_type == 'nus':
             from .nus_auth import login as nus_login
+            fresh_login = self.browser_profile is None
+            if fresh_login:
+                self._temporary_profile = tempfile.TemporaryDirectory(prefix='pollev-bot-')
+                self.browser_profile = self._temporary_profile.name
             nus_login(self.session, self.host, profile_dir=self.browser_profile,
                       timeout=self.login_timeout,
-                      exchange_token=self._exchange_auth_token)
+                      exchange_token=self._exchange_auth_token,
+                      force_interactive=fresh_login, cancel_event=self.stop_event)
             success = True
         elif self.login_type == 'uw':
             success = self._uw_login()
@@ -432,6 +457,7 @@ class PollBot:
             raise RetryablePollError('current_activity_unconfirmed')
         if current_id != poll_id:
             raise PollSkipped('activity_changed_before_submission')
+        self._check_submission_allowed()
         self.attempted_polls.add(poll_id)
         try:
             result = browser.submit_visible_text(text, question)
@@ -458,9 +484,20 @@ class PollBot:
             try:
                 activity = self._fetch_activity(poll_id)
             except PollSkipped as exc:
-                if str(exc) == 'no_verified_activity_route' and browser is not None:
-                    return self._answer_visible_text_poll(
-                        poll_id, browser, firehose_token)
+                if str(exc) == 'no_verified_activity_route':
+                    if browser is not None:
+                        return self._answer_visible_text_poll(
+                            poll_id, browser, firehose_token)
+                    if (self.login_type == 'nus' and self.browser_profile is not None
+                            and self.answer_mode in ('llm', 'theme')):
+                        from .nus_auth import NusHostBrowser
+                        try:
+                            with NusHostBrowser(self.session, self.host,
+                                                self.browser_profile) as temporary_browser:
+                                return self._answer_visible_text_poll(
+                                    poll_id, temporary_browser, firehose_token)
+                        except NusLoginError as browser_error:
+                            raise RetryablePollError('text_browser_open_failed') from browser_error
                 raise
             logger.info('Activity %s: %s question: %s', poll_id,
                         activity.kind.value, _preview(activity.question) or '(unavailable)')
@@ -501,11 +538,13 @@ class PollBot:
                 logger.info('Activity %s: selected option %s/%s: %s', poll_id,
                             selection.index + 1, len(candidates),
                             _preview(candidates[selection.index].text) or '(no text)')
+                self._check_submission_allowed()
                 result = self._submit_multiple_choice(poll_id, option_id)
             elif activity.kind is ActivityKind.OPEN_ENDED:
                 if self.open_ended_transport is None:
                     raise PollSkipped('open_ended_route_unverified')
                 text = self._generate_text_answer(poll_id, activity.question)
+                self._check_submission_allowed()
                 result = self._submit_open_ended(poll_id, text)
             else:
                 raise PollSkipped('unsupported_activity')
@@ -517,7 +556,21 @@ class PollBot:
             self.in_flight_polls.discard(poll_id)
 
     def alive(self):
-        return time.time() <= self.start_time + self.lifetime
+        return (not (self.stop_event is not None and self.stop_event.is_set())
+                and time.time() <= self.start_time + self.lifetime)
+
+    def _check_submission_allowed(self):
+        if ((self.stop_event is not None and self.stop_event.is_set())
+                or time.time() > self.start_time + self.lifetime):
+            raise PollSkipped('run_stopped_before_submission')
+
+    def _sleep(self, seconds):
+        remaining = max(0, self.start_time + self.lifetime - time.time())
+        seconds = min(seconds, remaining)
+        if self.stop_event is not None:
+            self.stop_event.wait(seconds)
+        else:
+            time.sleep(seconds)
 
     def _record_retry(self, poll_id: str, reason: str):
         count = self._failures.get(poll_id, 0) + 1
@@ -536,6 +589,10 @@ class PollBot:
         """Poll the host until lifetime expires, with bounded safe retries."""
         try:
             self.login()
+            if self.stop_event is not None and self.stop_event.is_set():
+                return
+            # The selected polling duration starts after manual sign-in.
+            self.start_time = time.time()
             if self.login_type == 'nus' and self.keep_browser_open:
                 from .nus_auth import NusHostBrowser
                 with NusHostBrowser(self.session, self.host,
@@ -579,7 +636,7 @@ class PollBot:
                             logger.warning('Could not refresh the course activity feed (%s).',
                                            type(exc).__name__)
                             self._next_firehose_warning_at = now + _STATUS_INTERVAL
-                        time.sleep(self.closed_wait)
+                        self._sleep(self.closed_wait)
                         continue
                 try:
                     poll_id = pending_poll_id or self.get_new_poll_id(token)
@@ -605,15 +662,19 @@ class PollBot:
 
                     logger.warning('The course feed denied access; complete '
                                    'check-in or registration in Chrome.')
+                    check_in_timeout = min(self.login_timeout, max(
+                        0, self.start_time + self.lifetime - time.time()))
                     try:
                         if browser is not None:
                             token, pending_poll_id = browser.assist_check_in(
-                                verify_check_in, timeout=self.login_timeout)
+                                verify_check_in, timeout=check_in_timeout,
+                                confirm=self.check_in_confirm, cancel_event=self.stop_event)
                         else:
                             token, pending_poll_id = assist_host_check_in(
                                 self.session, self.host, verify_check_in,
                                 profile_dir=self.browser_profile,
-                                timeout=self.login_timeout)
+                                timeout=check_in_timeout, confirm=self.check_in_confirm,
+                                cancel_event=self.stop_event)
                     except NusLoginError as check_in_error:
                         logger.error('Polling stopped: %s', check_in_error)
                         break
@@ -625,13 +686,13 @@ class PollBot:
                             logger.info('Still polling host %s; no new activity handled.',
                                         self.host)
                             next_status_at = now + _STATUS_INTERVAL
-                    time.sleep(self.closed_wait)
+                    self._sleep(self.closed_wait)
                     continue
                 self._clear_idle_status()
                 if self._failures.get(poll_id, 0) == 0:
                     logger.info('Activity %s detected; waiting %.1fs before responding.',
                                 poll_id, self.open_wait)
-                    time.sleep(self.open_wait)
+                    self._sleep(self.open_wait)
                 if not self.alive():
                     break
                 try:

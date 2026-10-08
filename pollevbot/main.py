@@ -4,21 +4,21 @@ import sys
 from dotenv import load_dotenv
 
 from pollevbot import PollBot
-from pollevbot.pollbot import LoginError
+from pollevbot.pollbot import LoginError, RetryablePollError
+from pollevbot.nus_auth import NusLoginError
+from requests import RequestException
 from pollevbot.runtime_config import bot_options_from_env
+from pollevbot.launcher_settings import ENV_PATH, normalize_host
 
 
 def _choose_mode(default):
     """Ask for a mode only in an interactive local terminal."""
     if not sys.stdin.isatty():
         return default
-    print('Answer mode: 1) LLM  2) Theme  3) Random')
     choices = {'1': 'llm', '2': 'theme', '3': 'random',
                'llm': 'llm', 'theme': 'theme', 'random': 'random'}
     while True:
-        choice = input('Choose mode (Enter for {}): '.format(default)).strip().lower()
-        if not choice:
-            return default
+        choice = input('Select mode [1. LLM] [2. Theme] [3. Random]: ').strip().lower()
         if choice in choices:
             return choices[choice]
         print('Choose 1, 2, or 3.')
@@ -32,11 +32,17 @@ def main():
                         help='choose an answer mode without the interactive menu')
     parser.add_argument('--theme', help='course theme for theme mode')
     args = parser.parse_args()
-    load_dotenv()
-    login_type = os.getenv("LOGIN_TYPE", "uw")
+    load_dotenv(ENV_PATH)
+    login_type = os.getenv("LOGIN_TYPE", "nus")
     user = os.getenv('USERNAME', '') if login_type.lower() == 'nus' else os.environ['USERNAME']
     password = os.getenv("PASSWORD", "") if login_type.lower() == 'nus' else os.environ["PASSWORD"]
-    host = os.environ["POLLHOST"]
+    try:
+        host = normalize_host(os.getenv('POLLHOST', ''))
+        lifetime = float(os.getenv('LIFETIME', '3600'))
+        if lifetime <= 0 or lifetime != lifetime:
+            raise ValueError('LIFETIME must be positive seconds.')
+    except ValueError as exc:
+        parser.error(str(exc))
 
     options = bot_options_from_env()
     if args.check_login:
@@ -63,7 +69,7 @@ def main():
             return
     try:
         with PollBot(user, password, host, login_type=login_type,
-                     browser_profile=os.getenv('NUS_BROWSER_PROFILE'),
+                     lifetime=lifetime,
                      keep_browser_open=os.getenv('NUS_KEEP_BROWSER_OPEN', 'false').strip().lower()
                      in ('1', 'true', 'yes', 'on'),
                      login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
@@ -81,7 +87,7 @@ def main():
                 bot.run()
     except KeyboardInterrupt:
         print('\nStopped by user.')
-    except LoginError as exc:
+    except (LoginError, NusLoginError, RetryablePollError, ValueError, RequestException) as exc:
         parser.exit(1, 'Poll Everywhere connection failed: {}\n'.format(exc))
 
 

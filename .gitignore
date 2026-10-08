@@ -117,6 +117,7 @@ setup.py
 *.har
 fixtures/raw/
 .venv-py314-backup/
-.pollev-auth/
-.pollev-auth-hweetoung/
+.pollev-auth*/
 *.gguf
+*.gguf.part
+.DS_Store

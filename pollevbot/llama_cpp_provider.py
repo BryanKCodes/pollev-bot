@@ -19,6 +19,7 @@ from .answer_validation import (InvalidAnswer, clean_open_ended_answer,
                                 clean_theme_answer,
                                 parse_option_selection)
 from .answerer import AnswerProvider, OptionSelection, TextAnswer
+from .model_setup import DEFAULT_MODEL_PATH, resolve_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +81,10 @@ class LlamaCppConfig:
         values = os.environ if env is None else env
         if values.get('LLM_BACKEND', 'llama_cpp') != 'llama_cpp':
             raise ModelConfigurationError('Only LLM_BACKEND=llama_cpp is supported.')
-        model_path = values.get('LLM_MODEL_PATH')
-        if not model_path:
-            raise ModelConfigurationError('LLM_MODEL_PATH is required.')
+        model_path = values.get('LLM_MODEL_PATH') or DEFAULT_MODEL_PATH
         try:
             return cls(
-                model_path=Path(model_path),
+                model_path=resolve_model_path(model_path),
                 context_size=int(values.get('LLM_CONTEXT_SIZE', '2048')),
                 threads=int(values.get('LLM_THREADS', str(max(1, (os.cpu_count() or 2) // 2)))),
                 gpu_layers=int(values.get('LLM_GPU_LAYERS', '0')),

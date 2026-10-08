@@ -13,138 +13,137 @@ Requires Python 3.8 or later for the local model dependency.
 
 [APScheduler](https://pypi.org/project/APScheduler/) to deploy to Heroku.
 
-## Usage
+## Local desktop launcher (NUS)
 
-Clone this repository and install its base dependencies:
-```
-python -m pip install -r requirements.txt
-```
+Use Python 3.10+ and Google Chrome. On an Apple Silicon Mac, install Python
+with Tk support, create the environment, and install the browser and local
+inference dependencies:
 
-Set `USERNAME`, `PASSWORD`, `POLLHOST`, and `LOGIN_TYPE` in a local `.env` file
-or environment.
-Use `LOGIN_TYPE=nus` for the browser-based NUS flow; its password is entered
-only in the browser. Run `python -m pollevbot.main`. The Python API accepts the
-same settings as `PollBot` constructor arguments.
-
-## NUS SSO on a local computer
-
-NUS accounts sign in through a browser and may require MFA. Use Python 3.10 or
-newer and Google Chrome, then install the optional browser dependency:
-
-```
-pip install -r requirements-nus.txt
+```sh
+brew install python@3.12 python-tk@3.12
+python3.12 -m venv .venv
+source .venv/bin/activate
+CMAKE_ARGS='-DGGML_METAL=on' python -m pip install -r requirements-desktop.txt
+python -m pollevbot.gui
 ```
 
-Set `POLLHOST` to the presenter name from the course URL and `LOGIN_TYPE=nus`
-in `.env`. `USERNAME` and `PASSWORD` do not select the NUS account; the saved
-Chrome profile does. Enter your credentials only in the Chrome window opened
-by the bot. Run a connection check before starting
-the polling loop:
+On other computers, use a Python installation with Tkinter and install
+`requirements-desktop.txt` without the Metal flag. Native inference builds may
+need a C/C++ compiler; see the
+[llama-cpp-python installation instructions](https://github.com/abetlen/llama-cpp-python#installation).
+On Linux, Tkinter may need your distribution's `python3-tk` package.
+On macOS you can also double-click **Launch PollEV.command** after setup.
 
+The launcher provides:
+
+- Presenter name or full `pollev.com/host` URL.
+- LLM, Theme, or Random mode. Theme reveals a course-topic field.
+- Numeric duration with minutes or hours. The timer starts after sign-in.
+- A **Keep the course browser open** checkbox.
+- Model status, a **Download Qwen model** button, and a GGUF file picker.
+- Start, Stop, Save settings, and **I checked in** controls.
+- One updating status line and an event log for questions, answers, and errors.
+
+Settings are saved locally in `.env` when you click Save settings or Start.
+The file is ignored by Git. No username, password, or MFA code is stored.
+Start opens a fresh Chrome session: enter your email, complete NUS sign-in and
+MFA, and finish the respondent-name prompt if shown. Different users choose
+their own account each run. The bot verifies the participant session before
+polling. Old `.pollev-auth*` directories are no longer used by the local
+launchers and can be removed after stopping any older bot/browser using them.
+
+A temporary Chrome profile holds cookies during the current run, allowing the
+bot to reopen the same signed-in session for check-in or a text response. It is
+deleted when the run ends. The old `NUS_BROWSER_PROFILE` setting selected a saved
+session between runs; a course-specific directory helped isolate that account
+and check-in state but could conflict with another Chrome process. Local
+launchers now manage this without a profile setting.
+
+With **Keep the course browser open** off, Chrome closes after login and opens
+again only if check-in or a text-response form is needed. With it on, the course
+window stays open until Stop or the duration expires. If a course asks you to
+check in, press its button and allow your real location in Chrome, then click
+**I checked in** in the launcher. The bot rechecks course access before
+resuming. Location is neither supplied nor emulated by the bot. If the course
+requires roster registration, the presenter must add your account.
+
+Keep the machine running with an internet connection. The Mac GUI uses
+`caffeinate -i` while the bot runs to prevent idle sleep; closing the lid or
+manually sleeping the machine can still interrupt it. Stop waits for a current
+request or native model operation to finish, then closes the bot's browser.
+Closing the launcher also requests Stop.
+
+## Model setup and answer modes
+
+The default is [Qwen2.5 1.5B Instruct Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF),
+about 1.12 GB. Use the GUI download button or:
+
+```sh
+python -m pollevbot.model_setup
 ```
+
+The downloader uses the publisher's file and verifies SHA256 before making it
+available. Your local copy lives in `models/`; GGUF binaries are ignored by Git,
+so someone cloning the repository downloads a copy once. `LLM_MODEL_PATH`
+defaults to `models/qwen2.5-1.5b-instruct-q4_k_m.gguf`, resolved from the project
+root. Absolute paths to other GGUF instruct models also work. On Apple Silicon,
+`LLM_GPU_LAYERS=-1` enables full Metal offload; use `0` for CPU inference.
+The model loads on the first answer and is reused while the launcher remains
+open. Random mode does not need a model.
+
+LLM mode uses visible questions to choose MCQ answers or generate short text.
+If the MCQ question is hidden, it falls back to a random option. Theme mode uses
+a course topic such as `nlp transformers` to generate a two or three word text
+phrase, including when the title is hidden; it uses random MCQ selection.
+Random mode answers MCQs and skips text responses. Presenter-only title text is
+not exposed by the participant workflow.
+
+For a text activity without a verified participant JSON route, LLM or Theme
+uses the actual visible Chrome form. LLM requires a visible question; Theme can
+use a hidden-title form. The bot confirms the current activity ID before
+clicking Submit. It records confirmed submissions and never resends an
+uncertain submission during that run. Answered IDs are held in memory; starting
+a new run resets that bookkeeping.
+
+## Terminal launcher
+
+Set a host in `.env` (see `.env.example`) or save it from the GUI. Run:
+
+```sh
+caffeinate -i python -m pollevbot.main
+```
+
+The prompt is `Select mode [1. LLM] [2. Theme] [3. Random]:`.
+Theme mode then asks for a topic. `--mode theme --theme 'nlp transformers'`
+bypasses prompts; noninteractive runs use `ANSWER_MODE` and `ANSWER_THEME`.
+`LIFETIME` is the polling duration in seconds (default 3600). Local login defaults
+to NUS and always opens a fresh sign-in session. With `NUS_KEEP_BROWSER_OPEN=false`,
+the browser closes when it is not needed. For check-in, complete the browser step
+and press Enter in the terminal. Press Ctrl+C to stop.
+
+The terminal refreshes one timestamped idle line. Activity events log the
+available question, selected option or generated text, submission result,
+retries, and skips. Redirected output receives an idle update about once a
+minute. Verify login without polling or answering using:
+
+```sh
 python -m pollevbot.main --check-login
 ```
 
-Complete NUS sign-in, MFA, and any respondent name prompt in that window. The
-dedicated browser profile in `.pollev-auth/` preserves the SSO session between
-runs. The bot checks the Poll Everywhere identity session, participant cookie,
-and course host connection before reporting success. Set `NUS_BROWSER_PROFILE`
-to use another profile directory or
-`NUS_LOGIN_TIMEOUT` to change the 300-second sign-in window. The profile
-contains session credentials and is ignored by Git. NUS browser sign-in is
-intended for a local computer with a desktop browser, not a Heroku dyno.
+When a host is idle, sign-in can be verified while live activity access remains
+unverified. The legacy UW/Poll Everywhere launchers still use `USERNAME`,
+`PASSWORD`, and `LOGIN_TYPE=uw` or `pollev` from their environment. Use separate
+configuration for those launchers; the NUS GUI removes obsolete local password
+and saved-profile settings when saving.
 
-The course may provide no activity-feed token while it is idle. In that case,
-`--check-login` verifies NUS sign-in but reports that live activity access is
-still unverified. Set `NUS_KEEP_BROWSER_OPEN=true` to open the saved Chrome
-profile at the course page as soon as polling starts and leave it visible until
-the bot stops. This is useful for hosts that present an attendance check-in.
-When an active activity requires check-in, complete it in that Chrome window,
-including Chrome's real location permission if requested, then press Enter in
-the terminal. The bot copies the browser session and checks the feed again
-before resuming. It does not set or emulate a location. This interactive step
-requires a local terminal and desktop Chrome. With the setting unset, the bot
-opens Chrome only when the active feed denies access.
-
-If the page says pre-registration is required and self-registration is disabled,
-sign in with the account on the course roster or ask the presenter to add it.
-Use a separate `NUS_BROWSER_PROFILE` for a different account or course. See
-Poll Everywhere’s [participant registration guidance](https://support.polleverywhere.com/pe1/participants-cannot-self-register)
-and [attendance check-in guidance](https://support.polleverywhere.com/pe1/getting-started-with-attendance-management-for-students-).
-
-## Local answer provider
-
-The local LLM provider is available as `LlamaCppProvider` in
-`pollevbot.llama_cpp_provider`. Run `python -m pollevbot.main` in a terminal to
-choose `1` for LLM, `2` for theme, or `3` for random. Theme mode then asks for a
-course topic such as `nlp transformers`; the model generates a plain two or
-three word phrase for a visible text response form. `ANSWER_MODE` sets the
-menu default and selects the mode in noninteractive launchers. `ANSWER_THEME`
-supplies a default theme or the required value for noninteractive theme mode.
-Use `--mode` and `--theme` to bypass the prompts. `--check-login` never prompts
-or answers. NUS theme mode keeps the course browser open so the bot can use its
-visible text form. Install the optional inference dependency with
-`pip install -r requirements-local.txt`.
-Keep a GGUF instruct model outside this repository and set `LLM_MODEL_PATH` to
-its absolute path. The provider loads it on the first answer request, then
-reuses it in the process. A starting model to evaluate is
-[Qwen2.5-1.5B-Instruct GGUF, Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF).
-No model is downloaded automatically.
-
-On an Apple Silicon Mac, create a Python 3.12 environment and build the local
-inference package with Metal support:
-
-```
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-nus.txt
-CMAKE_ARGS='-DGGML_METAL=on' python -m pip install --no-binary llama-cpp-python -r requirements-local.txt
-```
-
-Download a GGUF model from its publisher, verify its checksum, and place it
-outside the repository. For the Qwen model linked above, set these values in
-`.env` (use your own absolute model path):
-
-```
-ANSWER_MODE=llm
-LLM_BACKEND=llama_cpp
-LLM_MODEL_PATH=/absolute/path/to/qwen2.5-1.5b-instruct-q4_k_m.gguf
-LLM_GPU_LAYERS=-1
-```
-
-Use `python -m pollevbot.main --check-login` to confirm the NUS session, then
-`caffeinate -i python -m pollevbot.main` to keep the Mac awake while the bot
-polls. The check-login command does not load the model or submit answers. The
-bot loads the model when it first needs an answer. On a new sign-in or expired
-session, complete NUS authentication and MFA in the Chrome window; later runs
-reuse the saved browser profile while its session remains valid.
-
-The terminal reports when polling starts, then refreshes one timestamped idle
-status line after each check without adding lines to the scrollback. Output
-redirected to a file gets one idle update about every minute instead. When an
-activity arrives, the bot prints the available question, the
-selected option or generated text, and whether Poll Everywhere accepted the
-response. It reports retries and skips, and distinguishes an uncertain
-submission from an accepted one. Press Ctrl+C to stop. An activity is answered
-at most once during a single bot run; this bookkeeping is in memory, so a new
-run does not remember which activity IDs the previous run handled.
-For multiple-choice activities, the bot logs the title supplied to the
-participant endpoint before asking the model for an answer. If the question
-is hidden, LLM mode chooses a random option. Theme mode also uses random
-selection for multiple choice. Presenter-only text cannot be inferred from
-answer options. For a text activity whose participant API route is unavailable,
-LLM or theme mode can use the visible Chrome response form. LLM mode requires a
-visible question; theme mode can use a hidden-title form. The bot confirms the
-current activity ID again before clicking Submit and never retries an uncertain
-browser submission. This browser workflow is specific to the current form's
-visible labels and has not yet been exercised against a live text submission.
+## Advanced answer settings
 
 The provider accepts these environment settings:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `LLM_BACKEND` | `llama_cpp` | The supported local backend. |
-| `LLM_MODEL_PATH` | required | Local GGUF file outside the repository. |
+| `LLM_MODEL_PATH` | `models/qwen2.5-1.5b-instruct-q4_k_m.gguf` | GGUF path relative to the project root, or absolute. |
 | `LLM_CONTEXT_SIZE` | `2048` | Model context size. |
 | `LLM_THREADS` | half the CPU count | CPU inference threads. |
 | `LLM_GPU_LAYERS` | `0` | GPU layers; `-1` requests all layers. |
@@ -164,7 +163,7 @@ is skipped unless the random fallback is explicitly enabled. Open-ended text
 is cleaned and checked against the character limit before it can be used.
 The deadline can stop generation between tokens; it cannot interrupt one
 blocking native model operation. The exact Poll Everywhere open-ended fetch
-and submission route is still unverified. When the saved NUS Chrome page shows
+and submission route is still unverified. When the current NUS Chrome page shows
 one unanswered text form, the bot uses that form rather than guessing a private
 submission URL. Otherwise it skips the activity unless a separately verified
 `OpenEndedTransport` is injected.
@@ -179,7 +178,7 @@ options default in random mode; set `MAX_OPTION` to override it.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `ANSWER_MODE` | `random` | Menu default or noninteractive mode: `llm`, `theme`, `random`, or `skip`. |
+| `ANSWER_MODE` | `random` | Noninteractive mode: `llm`, `theme`, `random`, or `skip`. |
 | `ANSWER_THEME` | unset | Default theme prompt; required for noninteractive theme mode. |
 | `MIN_OPTION` | `0` | First candidate index. |
 | `MAX_OPTION` | all options | Exclusive end of candidate slice. |
