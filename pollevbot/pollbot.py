@@ -37,6 +37,10 @@ class LoginError(RuntimeError):
     """Login failed."""
 
 
+class FeedExpired(LoginError):
+    """The activity subscription needs a fresh feed token."""
+
+
 class PollSkipped(RuntimeError):
     """The activity cannot safely be answered with the available workflow."""
 
@@ -72,7 +76,7 @@ class PollBot:
                  keep_browser_open: bool = False,
                  answer_theme: Optional[str] = None,
                  stop_event=None, status_callback=None,
-                 check_in_confirm=None):
+                 check_in_confirm=None, action_callback=None):
         login_type = login_type.lower()
         if login_type not in {'uw', 'pollev', 'nus'}:
             raise ValueError('Unsupported login_type: {!r}'.format(login_type))
@@ -105,6 +109,7 @@ class PollBot:
         self.stop_event = stop_event
         self.status_callback = status_callback
         self.check_in_confirm = check_in_confirm
+        self.action_callback = action_callback
         self.login_timeout = login_timeout
         self.min_option = min_option
         self.max_option = max_option
@@ -152,8 +157,8 @@ class PollBot:
 
     def _show_idle_status(self) -> bool:
         """Refresh one terminal line after a check with no new activity."""
-        message = '{} Polling host {}; no new activity handled.'.format(
-            time.strftime('%H:%M:%S'), self.host)
+        message = 'Polling host {}. Last poll: {}'.format(
+            self.host, time.strftime('%H:%M:%S'))
         if self.status_callback is not None:
             self.status_callback(message)
             return True
@@ -257,7 +262,8 @@ class PollBot:
             nus_login(self.session, self.host, profile_dir=self.browser_profile,
                       timeout=self.login_timeout,
                       exchange_token=self._exchange_auth_token,
-                      force_interactive=fresh_login, cancel_event=self.stop_event)
+                      force_interactive=fresh_login, cancel_event=self.stop_event,
+                      notify_action=self.action_callback)
             success = True
         elif self.login_type == 'uw':
             success = self._uw_login()
@@ -296,11 +302,15 @@ class PollBot:
                 host=self.host, timestamp=self.timestamp())
         try:
             response = self.session.get(url, timeout=timeout)
+            if response.status_code in (401, 403):
+                raise LoginError('The course activity feed requires sign-in or check-in.')
             response.raise_for_status()
             message = json.loads(response.json()['message'])
             if not isinstance(message, dict):
                 return None
             error = message.get('error')
+            if isinstance(error, dict) and error.get('type') == 'ExpiredSubscription':
+                raise FeedExpired('The activity feed subscription expired.')
             if isinstance(error, dict) and error.get('type') == 'UnauthorizedSubscription':
                 raise LoginError('The course activity feed rejected this account.')
             if error:
@@ -444,6 +454,22 @@ class PollBot:
         except NusLoginError as exc:
             raise RetryablePollError('text_form_inspection_failed') from exc
         if question is None:
+            try:
+                already_answered = browser.already_responded()
+            except NusLoginError as exc:
+                raise RetryablePollError('response_status_inspection_failed') from exc
+            if already_answered:
+                try:
+                    current_id = self.get_new_poll_id(firehose_token, allow_in_flight=True, timeout=2)
+                except (LoginError, requests.RequestException, ValueError) as exc:
+                    raise RetryablePollError('current_activity_check_failed') from exc
+                if current_id != poll_id:
+                    raise RetryablePollError('current_activity_unconfirmed')
+                logger.info('Activity %s already answered in Chrome; keeping the existing response.', poll_id)
+                self.answered_polls.add(poll_id)
+                self._failures.pop(poll_id, None)
+                self._retry_after.pop(poll_id, None)
+                return {'already_answered': True}
             raise RetryablePollError('text_form_not_ready')
         logger.info('Activity %s: visible text question: %s', poll_id,
                     _preview(question) or '(hidden by presenter)')
@@ -622,6 +648,7 @@ class PollBot:
                     self.host, self.closed_wait, self.answer_mode)
         next_status_at = time.monotonic() + _STATUS_INTERVAL
         pending_poll_id = None
+        expired_refreshes = 0
         try:
             while self.alive():
                 if browser is not None:
@@ -643,6 +670,14 @@ class PollBot:
                     pending_poll_id = None
                 except LoginError as exc:
                     self._clear_idle_status()
+                    if isinstance(exc, FeedExpired):
+                        expired_refreshes += 1
+                        token = None
+                        if expired_refreshes <= self.retry_limit:
+                            logger.warning('Activity feed subscription expired; refreshing token (%s/%s).',
+                                           expired_refreshes, self.retry_limit)
+                            self._sleep(self.retry_backoff * (2 ** (expired_refreshes - 1)))
+                            continue
                     if self.login_type != 'nus':
                         logger.error('Polling stopped: %s', exc)
                         break
@@ -678,9 +713,12 @@ class PollBot:
                     except NusLoginError as check_in_error:
                         logger.error('Polling stopped: %s', check_in_error)
                         break
+                    expired_refreshes = 0
                     continue
+                expired_refreshes = 0
+                self._show_idle_status()
                 if poll_id is None:
-                    if not self._show_idle_status():
+                    if self.status_callback is None and not sys.stderr.isatty():
                         now = time.monotonic()
                         if now >= next_status_at:
                             logger.info('Still polling host %s; no new activity handled.',
@@ -696,8 +734,8 @@ class PollBot:
                 if not self.alive():
                     break
                 try:
-                    self.answer_poll(poll_id, browser=browser,
-                                     firehose_token=token)
+                    result = self.answer_poll(poll_id, browser=browser,
+                                              firehose_token=token)
                 except RetryablePollError as exc:
                     self._record_retry(poll_id, str(exc))
                 except PollSkipped as exc:
@@ -708,7 +746,8 @@ class PollBot:
                     logger.warning('Activity %s submission outcome uncertain; not retrying: %s',
                                    poll_id, str(exc))
                 else:
-                    logger.info('Activity %s response accepted.', poll_id)
+                    if not result.get('already_answered'):
+                        logger.info('Activity %s response accepted.', poll_id)
                 next_status_at = time.monotonic() + _STATUS_INTERVAL
         finally:
             self._clear_idle_status()

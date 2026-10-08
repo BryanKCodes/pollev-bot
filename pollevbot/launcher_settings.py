@@ -1,16 +1,73 @@
-"""Small, credential-free local launcher settings stored in .env."""
+"""Private settings and browser cache for the current operating-system user."""
 
+import hashlib
+import json
 import math
+import os
 import re
+import shutil
 import sys
-from dataclasses import dataclass
+import tempfile
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
-from dotenv import dotenv_values, set_key, unset_key
+from dotenv import dotenv_values
 
 from .model_setup import DEFAULT_MODEL_PATH, PROJECT_ROOT
 
 ENV_PATH = PROJECT_ROOT / '.env'
+# Separate OS users sharing a checkout must not inherit each other's login.
+_USER_ID = hashlib.sha256(('{}:{}'.format(Path.home(),
+    os.getuid() if hasattr(os, 'getuid') else os.getenv('USERNAME', 'user'))).encode()).hexdigest()[:20]
+USER_DIR = PROJECT_ROOT / '.pollev-users' / _USER_ID
+SETTINGS_PATH = USER_DIR / 'settings.json'
+BROWSER_PROFILE = USER_DIR / 'browser'
+
+
+def _private_directory(path):
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+
+
+@contextmanager
+def saved_login_lock():
+    """Prevent two local runs from opening the same saved Chrome session."""
+    _private_directory(USER_DIR)
+    lock = (USER_DIR / 'session.lock').open('a+b')
+    (USER_DIR / 'session.lock').chmod(0o600)
+    locked = False
+    try:
+        try:
+            if sys.platform == 'win32':
+                import msvcrt
+                if lock.seek(0, 2) == 0:
+                    lock.write(b'0')
+                    lock.flush()
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except OSError as exc:
+            raise RuntimeError('Another bot is using your saved login. Stop it before starting again.') from exc
+        yield
+    finally:
+        if locked:
+            if sys.platform == 'win32':
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+
+
+def clear_saved_login():
+    with saved_login_lock():
+        if BROWSER_PROFILE.exists():
+            shutil.rmtree(BROWSER_PROFILE)
 
 
 def normalize_host(value):
@@ -44,16 +101,28 @@ class LauncherSettings:
         self.host = normalize_host(self.host)
         if self.mode not in ('llm', 'theme', 'random'):
             raise ValueError('Select LLM, Theme, or Random.')
-        if self.unit not in ('minutes', 'hours') or not math.isfinite(self.duration) or self.duration <= 0:
+        if (self.unit not in ('minutes', 'hours') or not math.isfinite(self.duration)
+                or self.duration <= 0 or not math.isfinite(self.lifetime)):
             raise ValueError('Duration must be a positive number of minutes or hours.')
+        if not isinstance(self.model_path, str) or not self.model_path.strip():
+            raise ValueError('Select a GGUF model path.')
         self.theme = ' '.join(self.theme.split())
         if self.mode == 'theme' and not 1 <= len(self.theme) <= 120:
             raise ValueError('Enter a theme with 1 to 120 characters.')
         return self
 
     @classmethod
-    def load(cls, path=ENV_PATH):
-        values = dotenv_values(path)
+    def load(cls, path=SETTINGS_PATH):
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text())
+                settings = cls(**{key: value for key, value in data.items()
+                                  if key in cls.__dataclass_fields__})
+                return settings.validate()
+            except (ValueError, TypeError, AttributeError):
+                return cls()
+        # Import an old launcher's preferences once; future saves use JSON.
+        values = dotenv_values(ENV_PATH)
         try:
             seconds = float(values.get('LIFETIME') or '3600')
             if not math.isfinite(seconds) or seconds <= 0:
@@ -76,22 +145,24 @@ class LauncherSettings:
         except (TypeError, ValueError):
             return cls(host=values.get('POLLHOST') or '')
 
-    def save(self, path=ENV_PATH):
+    def runtime_values(self):
+        values = {key: value for key, value in dotenv_values(ENV_PATH).items() if value is not None}
+        values.update(os.environ)
+        values.update(ANSWER_MODE=self.mode, ANSWER_THEME=self.theme,
+                      LLM_MODEL_PATH=self.model_path, LLM_GPU_LAYERS=str(self.gpu_layers))
+        return values
+
+    def save(self, path=SETTINGS_PATH):
         self.validate()
-        path.touch(mode=0o600, exist_ok=True)
-        path.chmod(0o600)
-        # Remove obsolete local credentials and course-specific browser settings.
-        existing = dotenv_values(path)
-        for key in ('USERNAME', 'PASSWORD', 'NUS_BROWSER_PROFILE', 'DAY_OF_WEEK', 'LLM_BACKEND'):
-            if key in existing:
-                unset_key(str(path), key)
-        values = {
-            'LOGIN_TYPE': 'nus', 'POLLHOST': self.host,
-            'ANSWER_MODE': self.mode, 'ANSWER_THEME': self.theme,
-            'LIFETIME': format(self.lifetime, 'g'),
-            'DURATION_UNIT': self.unit,
-            'NUS_KEEP_BROWSER_OPEN': str(self.keep_browser_open).lower(),
-            'LLM_MODEL_PATH': self.model_path, 'LLM_GPU_LAYERS': str(self.gpu_layers),
-        }
-        for key, value in values.items():
-            set_key(str(path), key, value, quote_mode='auto')
+        _private_directory(path.parent)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                    dir=path.parent, suffix='.json.tmp', delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(asdict(self), output, indent=2)
+                output.write('\n')
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)

@@ -1,14 +1,16 @@
 import os
 import argparse
 import sys
+from contextlib import nullcontext
 from dotenv import load_dotenv
 
 from pollevbot import PollBot
 from pollevbot.pollbot import LoginError, RetryablePollError
 from pollevbot.nus_auth import NusLoginError
 from requests import RequestException
-from pollevbot.runtime_config import bot_options_from_env
-from pollevbot.launcher_settings import ENV_PATH, normalize_host
+from pollevbot.runtime_config import answer_provider_from_env, bot_options_from_env
+from pollevbot.launcher_settings import (BROWSER_PROFILE, ENV_PATH, LauncherSettings,
+                                         normalize_host, saved_login_lock)
 
 
 def _choose_mode(default):
@@ -31,20 +33,31 @@ def main():
     parser.add_argument('--mode', choices=('llm', 'theme', 'random', 'skip'),
                         help='choose an answer mode without the interactive menu')
     parser.add_argument('--theme', help='course theme for theme mode')
+    parser.add_argument('--host', help='presenter name or pollev.com URL')
     args = parser.parse_args()
     load_dotenv(ENV_PATH)
     login_type = os.getenv("LOGIN_TYPE", "nus")
     user = os.getenv('USERNAME', '') if login_type.lower() == 'nus' else os.environ['USERNAME']
     password = os.getenv("PASSWORD", "") if login_type.lower() == 'nus' else os.environ["PASSWORD"]
+    settings = LauncherSettings.load()
+    values = settings.runtime_values() if login_type.lower() == 'nus' else dict(os.environ)
     try:
-        host = normalize_host(os.getenv('POLLHOST', ''))
-        lifetime = float(os.getenv('LIFETIME', '3600'))
+        host_input = args.host or (settings.host if login_type.lower() == 'nus' else '') or os.getenv('POLLHOST', '')
+        if not host_input and sys.stdin.isatty():
+            host_input = input('Presenter / host: ')
+        host = normalize_host(host_input)
+        lifetime = float(os.getenv('LIFETIME', str(settings.lifetime)))
         if lifetime <= 0 or lifetime != lifetime:
             raise ValueError('LIFETIME must be positive seconds.')
     except ValueError as exc:
         parser.error(str(exc))
+    except EOFError:
+        parser.exit(1, 'Enter a host with --host or save it in the launcher.\n')
+    except KeyboardInterrupt:
+        print('\nStopped by user.')
+        return
 
-    options = bot_options_from_env()
+    options = bot_options_from_env(values)
     if args.check_login:
         options['answer_mode'] = 'skip'
         options.pop('answer_theme', None)
@@ -68,9 +81,14 @@ def main():
             print('\nStopped by user.')
             return
     try:
-        with PollBot(user, password, host, login_type=login_type,
+        values.update(ANSWER_MODE=options['answer_mode'], ANSWER_THEME=options.get('answer_theme', ''))
+        provider = answer_provider_from_env(values)
+        lock = saved_login_lock() if login_type.lower() == 'nus' else nullcontext()
+        with lock, PollBot(user, password, host, login_type=login_type,
                      lifetime=lifetime,
-                     keep_browser_open=os.getenv('NUS_KEEP_BROWSER_OPEN', 'false').strip().lower()
+                     browser_profile=str(BROWSER_PROFILE) if login_type.lower() == 'nus' else None,
+                     answer_provider=provider,
+                     keep_browser_open=os.getenv('NUS_KEEP_BROWSER_OPEN', str(settings.keep_browser_open)).strip().lower()
                      in ('1', 'true', 'yes', 'on'),
                      login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
                      **options) as bot:
@@ -87,7 +105,7 @@ def main():
                 bot.run()
     except KeyboardInterrupt:
         print('\nStopped by user.')
-    except (LoginError, NusLoginError, RetryablePollError, ValueError, RequestException) as exc:
+    except (LoginError, NusLoginError, RetryablePollError, ValueError, RequestException, RuntimeError) as exc:
         parser.exit(1, 'Poll Everywhere connection failed: {}\n'.format(exc))
 
 

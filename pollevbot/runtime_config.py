@@ -4,6 +4,18 @@ import os
 from typing import Mapping, Optional
 
 
+def answer_provider_from_env(values):
+    """Build a local provider from explicit settings without changing os.environ."""
+    mode = values.get('ANSWER_MODE', 'random')
+    if mode == 'llm':
+        from .llama_cpp_provider import LlamaCppProvider
+        return LlamaCppProvider.from_env(values)
+    if mode == 'theme':
+        from .llama_cpp_provider import ThemeProvider
+        return ThemeProvider.from_env(values.get('ANSWER_THEME', ''), values)
+    return None
+
+
 def bot_options_from_env(env: Optional[Mapping[str, str]] = None,
                          random_max_option: Optional[int] = None,
                          default_open_wait: float = 5) -> dict:

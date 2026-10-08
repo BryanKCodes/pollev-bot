@@ -44,27 +44,33 @@ The launcher provides:
 - Start, Stop, Save settings, and **I checked in** controls.
 - One updating status line and an event log for questions, answers, and errors.
 
-Settings are saved locally in `.env` when you click Save settings or Start.
-The file is ignored by Git. No username, password, or MFA code is stored.
-Start opens a fresh Chrome session: enter your email, complete NUS sign-in and
-MFA, and finish the respondent-name prompt if shown. Different users choose
-their own account each run. The bot verifies the participant session before
-polling. Old `.pollev-auth*` directories are no longer used by the local
-launchers and can be removed after stopping any older bot/browser using them.
+Host, mode, theme, duration, browser preferences, and model selection are saved
+when you click Save settings or Start, in `.pollev-users/<user-id>/settings.json`.
+`POLLHOST` is not needed in `.env`; the GUI uses your host input directly.
+`.env` is optional and holds advanced model/polling settings. Local preferences
+and browser sessions are ignored by Git and separated by operating-system user.
+The user directory has private permissions on macOS/Linux.
 
-A temporary Chrome profile holds cookies during the current run, allowing the
-bot to reopen the same signed-in session for check-in or a text response. It is
-deleted when the run ends. The old `NUS_BROWSER_PROFILE` setting selected a saved
-session between runs; a course-specific directory helped isolate that account
-and check-in state but could conflict with another Chrome process. Local
-launchers now manage this without a profile setting.
+Start checks your saved Chrome session and reuses it while it is valid. A first
+run or expired session opens Chrome for manual NUS sign-in, MFA, and any
+respondent-name prompt. Chrome session cookies remain locally in that user's
+`browser/` directory. There are no password or MFA fields in the launcher.
+Use **Switch account** to clear this saved session and sign in again on the next
+Start. Users sharing one OS login also share this cache, so switch accounts when
+needed. Fresh clones contain no settings or login cache.
+
+Only one local bot can use the saved login at a time. A second run reports that
+the existing run must stop, instead of launching Chrome against a locked
+profile. Old `.pollev-auth*` directories are unused and can be removed after
+stopping any older bot/browser using them. No `NUS_BROWSER_PROFILE` setting is
+needed.
 
 With **Keep the course browser open** off, Chrome closes after login and opens
 again only if check-in or a text-response form is needed. With it on, the course
 window stays open until Stop or the duration expires. If a course asks you to
 check in, press its button and allow your real location in Chrome, then click
-**I checked in** in the launcher. The bot rechecks course access before
-resuming. Location is neither supplied nor emulated by the bot. If the course
+**I checked in** in the launcher. A modal alerts you when check-in or
+sign-in needs your attention. The bot rechecks course access before resuming. Location is neither supplied nor emulated by the bot. If the course
 requires roster registration, the presenter must add your account.
 
 Keep the machine running with an internet connection. The Mac GUI uses
@@ -103,11 +109,14 @@ uses the actual visible Chrome form. LLM requires a visible question; Theme can
 use a hidden-title form. The bot confirms the current activity ID before
 clicking Submit. It records confirmed submissions and never resends an
 uncertain submission during that run. Answered IDs are held in memory; starting
-a new run resets that bookkeeping.
+a new run resets that bookkeeping. If the visible text activity explicitly
+shows that you already responded, the bot confirms the current activity and
+leaves that response unchanged instead of retrying an absent text form.
 
 ## Terminal launcher
 
-Set a host in `.env` (see `.env.example`) or save it from the GUI. Run:
+Save a host from the GUI, supply `--host your-presenter`, or enter it at the
+terminal prompt when no host is saved. Run:
 
 ```sh
 caffeinate -i python -m pollevbot.main
@@ -115,15 +124,18 @@ caffeinate -i python -m pollevbot.main
 
 The prompt is `Select mode [1. LLM] [2. Theme] [3. Random]:`.
 Theme mode then asks for a topic. `--mode theme --theme 'nlp transformers'`
-bypasses prompts; noninteractive runs use `ANSWER_MODE` and `ANSWER_THEME`.
-`LIFETIME` is the polling duration in seconds (default 3600). Local login defaults
-to NUS and always opens a fresh sign-in session. With `NUS_KEEP_BROWSER_OPEN=false`,
-the browser closes when it is not needed. For check-in, complete the browser step
+bypasses mode/theme prompts. The terminal uses your saved preferences and login
+cache; legacy environment values remain supported for existing launchers.
+The saved duration starts after login. For check-in, complete the browser step
 and press Enter in the terminal. Press Ctrl+C to stop.
 
-The terminal refreshes one timestamped idle line. Activity events log the
-available question, selected option or generated text, submission result,
-retries, and skips. Redirected output receives an idle update about once a
+The status reads `Polling host your-host. Last poll: HH:MM:SS` and updates after
+each feed check. Activity events log the available question, selected option or
+generated text, submission result, retries, and skips. GUI warnings are
+highlighted yellow and errors red. An expired activity subscription triggers a
+fresh feed token with bounded retries; persistent access problems open browser
+check-in. Feed subscription expiry is separate from question type.
+Redirected terminal output receives an idle update about once a
 minute. Verify login without polling or answering using:
 
 ```sh
@@ -133,8 +145,8 @@ python -m pollevbot.main --check-login
 When a host is idle, sign-in can be verified while live activity access remains
 unverified. The legacy UW/Poll Everywhere launchers still use `USERNAME`,
 `PASSWORD`, and `LOGIN_TYPE=uw` or `pollev` from their environment. Use separate
-configuration for those launchers; the NUS GUI removes obsolete local password
-and saved-profile settings when saving.
+configuration for those launchers. The NUS GUI does not read credentials from
+these environment fields or write launcher preferences to `.env`.
 
 ## Advanced answer settings
 

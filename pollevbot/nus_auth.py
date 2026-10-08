@@ -1,11 +1,12 @@
 """Interactive NUS SSO for the Poll Everywhere participant site.
 
 NUS uses Microsoft sign-in and MFA. A Chrome profile keeps that
-session for the current run; the bot copies only Poll Everywhere participant cookies
+session between runs; the bot copies only Poll Everywhere participant cookies
 into its requests session after sign-in.
 """
 
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -74,7 +75,7 @@ def _session_state(context, session):
 
 
 def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
-          force_interactive=False, cancel_event=None):
+          force_interactive=False, cancel_event=None, notify_action=None):
     """Sign in through NUS and connect the browser session to ``session``.
 
     ``exchange_token`` receives a Poll Everywhere participant auth token if
@@ -103,6 +104,9 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
                 if all(_session_state(context, session)):
                     logger.info('Reused the NUS browser identity session.')
                     return
+            except Exception as exc:
+                logger.warning('Saved login could not be verified (%s); sign in again.',
+                               type(exc).__name__)
             finally:
                 context.close()
 
@@ -128,6 +132,8 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
 
             page.on('framenavigated', capture_token)
             logger.info('Complete NUS sign-in and MFA in the Chrome window.')
+            if notify_action:
+                notify_action('Complete NUS sign-in and MFA in Chrome, then finish any respondent-name prompt.')
             page.goto(sso_url, wait_until='domcontentloaded', timeout=30000)
             deadline = time.monotonic() + timeout
             attempted_token = None
@@ -150,6 +156,8 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
                         return
                     if identity_ready and not participant_ready and not prompted_for_name:
                         logger.info('Finish the respondent name prompt in Chrome.')
+                        if notify_action:
+                            notify_action('Finish the respondent-name prompt in Chrome to connect your account.')
                         prompted_for_name = True
                 except Exception as exc:
                     logger.warning('Could not check browser session: %s', type(exc).__name__)
@@ -268,6 +276,20 @@ class NusHostBrowser:
         except Exception as exc:
             raise NusLoginError('Could not inspect the course response form.') from exc
         return None if form is None else form[2]
+
+    def already_responded(self):
+        """Recognise an explicit participant confirmation without submitting."""
+        if self.page is None:
+            return False
+        try:
+            for frame in self.page.frames:
+                body = frame.locator('body').inner_text(timeout=2000)
+                if re.search(r'^\s*you (?:have (?:already )?)?responded\b', body,
+                             re.IGNORECASE | re.MULTILINE):
+                    return True
+        except Exception as exc:
+            raise NusLoginError('Could not inspect the participant response status.') from exc
+        return False
 
     def submit_visible_text(self, text, expected_question):
         """Submit through the actual participant form and observe its response."""

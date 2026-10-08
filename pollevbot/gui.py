@@ -1,7 +1,6 @@
 """Local desktop launcher. All browser and polling work runs off the Tk thread."""
 
 import logging
-import os
 import queue
 import subprocess
 import sys
@@ -9,14 +8,11 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
-
-from dotenv import load_dotenv
-
-from .launcher_settings import ENV_PATH, LauncherSettings
+from .launcher_settings import (BROWSER_PROFILE, LauncherSettings,
+                                clear_saved_login, saved_login_lock)
 from .model_setup import DEFAULT_MODEL_PATH, download_model, resolve_model_path
 from .pollbot import PollBot
-from .runtime_config import bot_options_from_env
+from .runtime_config import answer_provider_from_env, bot_options_from_env
 
 
 class QueueLogHandler(logging.Handler):
@@ -26,7 +22,7 @@ class QueueLogHandler(logging.Handler):
         self.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', '%H:%M:%S'))
 
     def emit(self, record):
-        self.events.put(('log', self.format(record)))
+        self.events.put(('log', (record.levelno, self.format(record))))
 
 
 class Launcher:
@@ -67,10 +63,8 @@ class Launcher:
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
         ttk.Label(outer, text='Poll Everywhere', style='Title.TLabel').pack(anchor='w')
-        ttk.Label(outer, text='Sign in with NUS in Chrome each time you start.',
-                  style='Hint.TLabel').pack(anchor='w', pady=(6, 20))
         form = ttk.Frame(outer)
-        form.pack(fill='x')
+        form.pack(fill='x', pady=(16, 0))
         form.columnconfigure(1, weight=1)
         self.inputs = []
 
@@ -102,8 +96,6 @@ class Launcher:
         keep = ttk.Checkbutton(outer, text='Keep the course browser open while polling', variable=self.keep_browser)
         keep.pack(anchor='w', pady=(16, 5))
         self.inputs.append((keep, 'normal'))
-        ttk.Label(outer, text='Otherwise Chrome opens only for login, check-in, or a text response.',
-                  style='Hint.TLabel', wraplength=600).pack(anchor='w')
         model = ttk.LabelFrame(outer, text='Local model · needed for LLM and Theme', padding=10)
         model.pack(fill='x', pady=16)
         ttk.Label(model, textvariable=self.model_status, wraplength=560).pack(anchor='w')
@@ -122,11 +114,25 @@ class Launcher:
         self.stop_button.pack(side='left', padx=8)
         self.save_button = ttk.Button(actions, text='Save settings', command=self.save)
         self.save_button.pack(side='left')
+        self.account_button = ttk.Button(actions, text='Switch account', command=self.switch_account)
+        self.account_button.pack(side='left', padx=8)
+        self.inputs.append((self.account_button, 'normal'))
         self.check_button = ttk.Button(actions, text='I checked in', command=self.confirm, state='disabled')
         self.check_button.pack(side='right')
         ttk.Label(outer, textvariable=self.status, wraplength=600).pack(anchor='w', pady=14)
-        self.logs = ScrolledText(outer, height=10, font=('Menlo', 11), wrap='word', state='disabled')
+        log_frame = ttk.Frame(outer)
+        log_frame.pack(fill='both', expand=True)
+        background = style.lookup('TFrame', 'background') or self.root.cget('background')
+        style.configure('Log.Vertical.TScrollbar', background=background, troughcolor=background)
+        scrollbar = ttk.Scrollbar(log_frame, orient='vertical', style='Log.Vertical.TScrollbar')
+        scrollbar.pack(side='right', fill='y')
+        self.logs = tk.Text(log_frame, height=10, font=('Menlo', 11), wrap='word',
+                            state='disabled', yscrollcommand=scrollbar.set,
+                            borderwidth=0, highlightthickness=0)
         self.logs.pack(fill='both', expand=True)
+        scrollbar.configure(command=self.logs.yview)
+        self.logs.tag_configure('warning', background='#fff1a8', foreground='#5b4300')
+        self.logs.tag_configure('error', background='#ffd8d8', foreground='#9b1c1c')
         host_entry.focus_set()
 
     def _mode_changed(self, *_):
@@ -155,7 +161,7 @@ class Launcher:
     def save(self):
         try:
             self._settings().save()
-            self.status.set('Settings saved. Passwords are entered only in Chrome.')
+            self.status.set('Settings saved.')
         except (ValueError, OSError) as exc:
             messagebox.showerror('Settings', str(exc), parent=self.root)
 
@@ -165,6 +171,16 @@ class Launcher:
         if path:
             self.model_path = path
             self._refresh_model()
+
+    def switch_account(self):
+        if not messagebox.askyesno('Switch account',
+                'Clear this user’s saved login? You will sign in again on the next Start.', parent=self.root):
+            return
+        try:
+            clear_saved_login()
+            self.status.set('Saved login cleared. Start to sign in with your account.')
+        except (RuntimeError, OSError) as exc:
+            messagebox.showerror('Could not clear login', str(exc), parent=self.root)
 
     def _busy(self, busy):
         for widget, state in self.inputs:
@@ -184,9 +200,7 @@ class Launcher:
             settings = self._settings()
             if settings.mode != 'random':
                 from .llama_cpp_provider import LlamaCppConfig
-                load_dotenv(ENV_PATH, override=True)
-                LlamaCppConfig.from_env({'LLM_MODEL_PATH': settings.model_path,
-                                         'LLM_GPU_LAYERS': str(settings.gpu_layers)})
+                LlamaCppConfig.from_env(settings.runtime_values())
                 import llama_cpp  # Confirm the inference dependency before sign-in.
             import playwright.sync_api
             settings.save()
@@ -196,7 +210,7 @@ class Launcher:
         self.stop_event.clear()
         self.confirm_event.clear()
         self._busy(True)
-        self.status.set('Opening Chrome for NUS sign-in and MFA…')
+        self.status.set('Checking saved login…')
         self.worker = threading.Thread(target=self._run_bot, args=(settings,), daemon=True)
         self.worker.start()
 
@@ -208,22 +222,26 @@ class Launcher:
                     awake = subprocess.Popen(['caffeinate', '-i'])
                 except OSError:
                     logging.getLogger(__name__).warning('Keep your computer awake while polling.')
-            load_dotenv(ENV_PATH, override=True)
-            options = bot_options_from_env()
-            with PollBot('', '', settings.host, login_type='nus', lifetime=settings.lifetime,
-                         keep_browser_open=settings.keep_browser_open,
-                         login_timeout=float(os.getenv('NUS_LOGIN_TIMEOUT', '300')),
-                         stop_event=self.stop_event,
-                         status_callback=lambda text: self.events.put(('status', text)),
-                         check_in_confirm=self._wait_for_check_in, **options) as bot:
-                bot.run()
+            values = settings.runtime_values()
+            options = bot_options_from_env(values)
+            provider = answer_provider_from_env(values)
+            with saved_login_lock():
+                with PollBot('', '', settings.host, login_type='nus', lifetime=settings.lifetime,
+                             browser_profile=str(BROWSER_PROFILE), answer_provider=provider,
+                             keep_browser_open=settings.keep_browser_open,
+                             login_timeout=float(values.get('NUS_LOGIN_TIMEOUT', '300')),
+                             stop_event=self.stop_event,
+                             status_callback=lambda text: self.events.put(('status', text)),
+                             action_callback=lambda text: self.events.put(('action', text)),
+                             check_in_confirm=self._wait_for_check_in, **options) as bot:
+                    bot.run()
         except Exception as exc:
-            self.events.put(('log', 'Could not run: {}'.format(exc)))
+            self.events.put(('log', (logging.ERROR, 'Could not run: {}'.format(exc))))
         finally:
             if awake is not None:
                 awake.terminate()
                 awake.wait()
-            self.events.put(('done', 'Stopped. See the event log for details. Start opens a fresh sign-in.'))
+            self.events.put(('done', 'Stopped. See the event log for details.'))
 
     def _wait_for_check_in(self, deadline):
         self.confirm_event.clear()
@@ -260,7 +278,7 @@ class Launcher:
                 self.events.put(('model_ready', DEFAULT_MODEL_PATH))
                 self.events.put(('done', 'Model downloaded and checksum verified. Ready to Start.'))
             except Exception as exc:
-                self.events.put(('log', str(exc)))
+                self.events.put(('log', (logging.ERROR, str(exc))))
                 self.events.put(('done', 'Model download stopped.'))
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
@@ -270,21 +288,31 @@ class Launcher:
             while True:
                 kind, value = self.events.get_nowait()
                 if kind == 'log':
+                    level, text = value
+                    tag = 'error' if level >= logging.ERROR else 'warning' if level >= logging.WARNING else ''
                     self.logs.configure(state='normal')
-                    self.logs.insert('end', value + '\n')
+                    self.logs.insert('end', text + '\n', (tag,) if tag else ())
                     # Keep a bounded event history for long sessions.
                     lines = int(self.logs.index('end-1c').split('.')[0])
                     if lines > 600:
                         self.logs.delete('1.0', '{}.0'.format(lines - 500))
                     self.logs.see('end')
                     self.logs.configure(state='disabled')
-                    self.status.set(value)
                 elif kind in ('status', 'check_in', 'check_done'):
                     self.status.set(value)
                     if kind == 'check_in':
                         self.check_button.configure(state='normal')
+                        if not self.closing and not self.stop_event.is_set():
+                            self.root.bell()
+                            messagebox.showinfo('Check-in required',
+                                value + '\n\nAllow your real location if Chrome asks.', parent=self.root)
                     elif kind == 'check_done':
                         self.check_button.configure(state='disabled')
+                elif kind == 'action':
+                    self.status.set(value)
+                    if not self.closing and not self.stop_event.is_set():
+                        self.root.bell()
+                        messagebox.showinfo('Action required', value, parent=self.root)
                 elif kind == 'model_ready':
                     self.model_path = value
                 elif kind == 'done':
