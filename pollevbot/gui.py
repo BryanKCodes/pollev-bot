@@ -82,6 +82,20 @@ class Launcher:
         rgb = self.root.winfo_rgb(icon_color)
         icon_color = '#{:02x}{:02x}{:02x}'.format(*(channel // 257 for channel in rgb))
         self.icons = make_icons(self.root, icon_color)
+        if style.theme_use() == 'aqua':
+            # Aqua's native menu button draws a separate arrow segment whose
+            # height can differ from the field. Use one native button surface
+            # with an inset chevron, retaining the menu button's bindings.
+            style.element_create('Mode.chevron', 'image', self.icons['chevron'])
+            style.layout('Mode.TMenubutton', [
+                ('Button.button', {'sticky': 'nswe', 'children': [
+                    ('Menubutton.padding', {'sticky': 'nswe', 'children': [
+                        ('Mode.chevron', {'side': 'right', 'sticky': 'e'}),
+                        ('Menubutton.label', {'side': 'left', 'sticky': 'we'}),
+                    ]}),
+                ]}),
+            ])
+            style.configure('Mode.TMenubutton', padding=(10, 4), anchor='w')
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
         header = ttk.Frame(outer)
@@ -106,7 +120,8 @@ class Launcher:
         host_entry.grid(row=0, column=1, sticky='ew')
         self.inputs.append((host_entry, 'normal'))
         label('Answer mode', 1, 'document')
-        mode = ttk.Menubutton(form, textvariable=self.mode, direction='below')
+        mode = ttk.Menubutton(form, textvariable=self.mode, direction='below',
+                              style='Mode.TMenubutton')
         mode_menu = tk.Menu(mode, tearoff=False)
         for value, description in MODE_LABELS.items():
             mode_menu.add_radiobutton(label=description, variable=self.mode,
