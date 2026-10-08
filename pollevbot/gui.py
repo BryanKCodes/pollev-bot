@@ -83,19 +83,27 @@ class Launcher:
         icon_color = '#{:02x}{:02x}{:02x}'.format(*(channel // 257 for channel in rgb))
         self.icons = make_icons(self.root, icon_color)
         if style.theme_use() == 'aqua':
-            # Match the native text fields, including their insets and height,
-            # while retaining the menu button's popup and keyboard bindings.
+            # Aqua's Entry.field paints over menu-button contents. A generic
+            # field preserves the text and arrow while matching the inputs.
+            field_background = style.lookup('TEntry', 'background')
+            field_rgb = self.root.winfo_rgb(field_background)
+            text_rgb = self.root.winfo_rgb(icon_color)
+            field_border = '#{:02x}{:02x}{:02x}'.format(*(
+                round((base * 0.85 + text * 0.15) / 257)
+                for base, text in zip(field_rgb, text_rgb)))
+            style.element_create('Mode.field', 'from', 'clam', 'Combobox.field')
             style.element_create('Mode.chevron', 'image', self.icons['chevron'])
             style.layout('Mode.TMenubutton', [
-                ('Entry.field', {'sticky': 'nswe', 'border': 1, 'children': [
+                ('Mode.field', {'sticky': 'nswe', 'children': [
                     ('Menubutton.padding', {'sticky': 'nswe', 'children': [
                         ('Mode.chevron', {'side': 'right', 'sticky': 'e'}),
                         ('Menubutton.label', {'side': 'left', 'sticky': 'we'}),
                     ]}),
                 ]}),
             ])
-            style.configure('Mode.TMenubutton', padding=0, anchor='w', font='TkTextFont',
-                            background=style.lookup('TEntry', 'background'),
+            style.configure('Mode.TMenubutton', padding=(3, 3, 3, 4), anchor='w', font='TkTextFont',
+                            fieldbackground=field_background,
+                            bordercolor=field_border, lightcolor=field_border,
                             foreground=style.lookup('TEntry', 'foreground'))
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
