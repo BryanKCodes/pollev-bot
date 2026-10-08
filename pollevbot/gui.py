@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 from .launcher_settings import (BROWSER_PROFILE, LauncherSettings,
-                                clear_saved_login, saved_login_lock)
+                                clear_saved_login, saved_login_lock, save_model_selection)
 from .model_setup import DEFAULT_MODEL_PATH, download_model, resolve_model_path
 from .pollbot import PollBot
 from .runtime_config import answer_provider_from_env, bot_options_from_env
@@ -62,8 +62,7 @@ class Launcher:
         style.configure('Title.TLabel', font=('Helvetica', 23, 'bold'))
         style.configure('Hint.TLabel', foreground='#666666')
         self.model_heading_font = tkfont.nametofont('TkDefaultFont').copy()
-        heading_size = self.model_heading_font.cget('size')
-        self.model_heading_font.configure(size=heading_size + (1 if heading_size > 0 else -2))
+        self.model_heading_font.configure(weight='bold')
         style.configure('Model.TLabelframe.Label', font=self.model_heading_font)
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
@@ -175,8 +174,14 @@ class Launcher:
         path = filedialog.askopenfilename(parent=self.root, title='Choose a GGUF instruct model',
                                           filetypes=(('GGUF model', '*.gguf'),))
         if path:
+            try:
+                save_model_selection(path, self.gpu_layers)
+            except (ValueError, OSError) as exc:
+                messagebox.showerror('Could not save model', str(exc), parent=self.root)
+                return
             self.model_path = path
             self._refresh_model()
+            self.status.set('Model selected and saved.')
 
     def switch_account(self):
         if not messagebox.askyesno('Switch account',
@@ -281,8 +286,9 @@ class Launcher:
                 download_model(lambda size, total: self.events.put(('status',
                     'Downloading model: {:.0f} MB{}'.format(size / 1_000_000,
                     ' / {:.0f} MB'.format(total / 1_000_000) if total else ''))), self.stop_event)
+                save_model_selection(DEFAULT_MODEL_PATH, self.gpu_layers)
                 self.events.put(('model_ready', DEFAULT_MODEL_PATH))
-                self.events.put(('done', 'Model downloaded and checksum verified. Ready to Start.'))
+                self.events.put(('done', 'Model verified, selected, and saved. Ready to Start.'))
             except Exception as exc:
                 self.events.put(('log', (logging.ERROR, str(exc))))
                 self.events.put(('done', 'Model download stopped.'))

@@ -50,4 +50,7 @@ def download_model(progress=None, cancel=None):
 
 if __name__ == '__main__':
     print('Downloading Qwen2.5 1.5B Q4_K_M (about 1.12 GB) from its publisher…')
-    print('Model ready:', download_model())
+    model_path = download_model()
+    from .launcher_settings import LauncherSettings, save_model_selection
+    save_model_selection(DEFAULT_MODEL_PATH, LauncherSettings.load().gpu_layers)
+    print('Model ready and selected:', model_path)

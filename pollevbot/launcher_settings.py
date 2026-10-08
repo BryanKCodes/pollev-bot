@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import sys
@@ -12,8 +13,6 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
-
-from dotenv import dotenv_values
 
 from .model_setup import DEFAULT_MODEL_PATH, PROJECT_ROOT
 
@@ -91,14 +90,17 @@ class LauncherSettings:
     unit: str = 'minutes'
     keep_browser_open: bool = False
     model_path: str = DEFAULT_MODEL_PATH
-    gpu_layers: int = -1 if sys.platform == 'darwin' else 0
+    gpu_layers: int = -1 if sys.platform == 'darwin' and platform.machine() == 'arm64' else 0
 
     @property
     def lifetime(self):
         return self.duration * (3600 if self.unit == 'hours' else 60)
 
-    def validate(self):
-        self.host = normalize_host(self.host)
+    def validate(self, require_ready=True):
+        if self.host.strip() or require_ready:
+            self.host = normalize_host(self.host)
+        else:
+            self.host = ''
         if self.mode not in ('llm', 'theme', 'random'):
             raise ValueError('Select LLM, Theme, or Random.')
         if (self.unit not in ('minutes', 'hours') or not math.isfinite(self.duration)
@@ -106,8 +108,10 @@ class LauncherSettings:
             raise ValueError('Duration must be a positive number of minutes or hours.')
         if not isinstance(self.model_path, str) or not self.model_path.strip():
             raise ValueError('Select a GGUF model path.')
+        if isinstance(self.gpu_layers, bool) or not isinstance(self.gpu_layers, int) or self.gpu_layers < -1:
+            raise ValueError('GPU layers must be -1 or a non-negative integer.')
         self.theme = ' '.join(self.theme.split())
-        if self.mode == 'theme' and not 1 <= len(self.theme) <= 120:
+        if len(self.theme) > 120 or (require_ready and self.mode == 'theme' and not self.theme):
             raise ValueError('Enter a theme with 1 to 120 characters.')
         return self
 
@@ -118,42 +122,19 @@ class LauncherSettings:
                 data = json.loads(path.read_text())
                 settings = cls(**{key: value for key, value in data.items()
                                   if key in cls.__dataclass_fields__})
-                return settings.validate()
+                return settings.validate(require_ready=False)
             except (ValueError, TypeError, AttributeError):
                 return cls()
-        # Import an old launcher's preferences once; future saves use JSON.
-        values = dotenv_values(ENV_PATH)
-        try:
-            seconds = float(values.get('LIFETIME') or '3600')
-            if not math.isfinite(seconds) or seconds <= 0:
-                seconds = 3600
-            unit = values.get('DURATION_UNIT')
-            if unit not in ('minutes', 'hours'):
-                unit = 'hours' if seconds >= 3600 and seconds % 3600 == 0 else 'minutes'
-            hours = unit == 'hours'
-            mode = values.get('ANSWER_MODE', 'llm')
-            return cls(
-                host=values.get('POLLHOST') or '',
-                mode=mode if mode in ('llm', 'theme', 'random') else 'llm',
-                theme=values.get('ANSWER_THEME') or '',
-                duration=seconds / (3600 if hours else 60),
-                unit=unit,
-                keep_browser_open=(values.get('NUS_KEEP_BROWSER_OPEN') or '').lower()
-                in ('true', '1', 'yes', 'on'),
-                model_path=values.get('LLM_MODEL_PATH') or DEFAULT_MODEL_PATH,
-                gpu_layers=int(values.get('LLM_GPU_LAYERS') or cls().gpu_layers))
-        except (TypeError, ValueError):
-            return cls(host=values.get('POLLHOST') or '')
+        return cls()
 
     def runtime_values(self):
-        values = {key: value for key, value in dotenv_values(ENV_PATH).items() if value is not None}
-        values.update(os.environ)
-        values.update(ANSWER_MODE=self.mode, ANSWER_THEME=self.theme,
-                      LLM_MODEL_PATH=self.model_path, LLM_GPU_LAYERS=str(self.gpu_layers))
-        return values
+        """Use saved preferences plus the provider's built-in runtime defaults."""
+        return {'ANSWER_MODE': self.mode, 'ANSWER_THEME': self.theme,
+                'LLM_MODEL_PATH': self.model_path, 'LLM_GPU_LAYERS': str(self.gpu_layers)}
 
     def save(self, path=SETTINGS_PATH):
-        self.validate()
+        # Model selection can be saved before entering a host or course theme.
+        self.validate(require_ready=False)
         _private_directory(path.parent)
         temporary = None
         try:
@@ -166,3 +147,11 @@ class LauncherSettings:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+
+def save_model_selection(model_path, gpu_layers, path=SETTINGS_PATH):
+    """Persist a selected/downloaded model without requiring a configured host."""
+    settings = LauncherSettings.load(path)
+    settings.model_path = str(model_path)
+    settings.gpu_layers = gpu_layers
+    settings.save(path)

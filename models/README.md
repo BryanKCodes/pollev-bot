@@ -15,7 +15,9 @@ making the file available:
 6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e
 ```
 
-`LLM_MODEL_PATH=models/qwen2.5-1.5b-instruct-q4_k_m.gguf` resolves relative to
-this project's root, regardless of the terminal's working directory. You can
-also choose another GGUF instruct model in the launcher. Model binaries are
+The downloader selects `models/qwen2.5-1.5b-instruct-q4_k_m.gguf` and saves it in
+the current user's settings automatically. It resolves relative to this
+project's root, regardless of the terminal's working directory. Choosing
+another GGUF in the launcher also saves that path immediately. No `.env` file
+is needed. Model binaries are
 ignored by Git; each new installation downloads its own copy.

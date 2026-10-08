@@ -47,7 +47,9 @@ The launcher provides:
 Host, mode, theme, duration, browser preferences, and model selection are saved
 when you click Save settings or Start, in `.pollev-users/<user-id>/settings.json`.
 `POLLHOST` is not needed in `.env`; the GUI uses your host input directly.
-`.env` is optional and holds advanced model/polling settings. Local preferences
+The desktop launcher does not read `.env` or environment overrides. Model path
+and GPU layers are saved with user preferences; other runtime controls have
+built-in defaults. Local preferences
 and browser sessions are ignored by Git and separated by operating-system user.
 The user directory has private permissions on macOS/Linux.
 
@@ -92,11 +94,15 @@ python -m pollevbot.model_setup
 ```
 
 The downloader uses the publisher's file and verifies SHA256 before making it
-available. Your local copy lives in `models/`; GGUF binaries are ignored by Git,
-so someone cloning the repository downloads a copy once. `LLM_MODEL_PATH`
-defaults to `models/qwen2.5-1.5b-instruct-q4_k_m.gguf`, resolved from the project
-root. Absolute paths to other GGUF instruct models also work. On Apple Silicon,
-`LLM_GPU_LAYERS=-1` enables full Metal offload; use `0` for CPU inference.
+available. Both the GUI download button and terminal downloader automatically
+select and save that model for the current user, even before a host is entered.
+**Choose GGUF** also saves the selected path immediately. Your local copy lives
+in `models/`; GGUF binaries are ignored by Git, so someone cloning the repository
+downloads a copy once. The saved model path defaults to
+`models/qwen2.5-1.5b-instruct-q4_k_m.gguf`, resolved from the project root.
+Absolute paths to other GGUF instruct models also work. GPU layers default to
+`-1` for Metal on Apple Silicon and `0` for CPU on other machines, and are stored
+in the same user settings file. No `.env` file is needed.
 The model loads on the first answer and is reused while the launcher remains
 open. Random mode does not need a model.
 
@@ -153,7 +159,9 @@ these environment fields or write launcher preferences to `.env`.
 
 ## Advanced answer settings
 
-The provider accepts these environment settings:
+The desktop launcher uses the provider's built-in defaults and saved model
+preferences. The provider API and legacy launchers also support these optional
+environment settings:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
