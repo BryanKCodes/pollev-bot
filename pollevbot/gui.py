@@ -83,19 +83,20 @@ class Launcher:
         icon_color = '#{:02x}{:02x}{:02x}'.format(*(channel // 257 for channel in rgb))
         self.icons = make_icons(self.root, icon_color)
         if style.theme_use() == 'aqua':
-            # Aqua's native menu button draws a separate arrow segment whose
-            # height can differ from the field. Use one native button surface
-            # with an inset chevron, retaining the menu button's bindings.
+            # Match the native text fields, including their insets and height,
+            # while retaining the menu button's popup and keyboard bindings.
             style.element_create('Mode.chevron', 'image', self.icons['chevron'])
             style.layout('Mode.TMenubutton', [
-                ('Button.button', {'sticky': 'nswe', 'children': [
+                ('Entry.field', {'sticky': 'nswe', 'border': 1, 'children': [
                     ('Menubutton.padding', {'sticky': 'nswe', 'children': [
                         ('Mode.chevron', {'side': 'right', 'sticky': 'e'}),
                         ('Menubutton.label', {'side': 'left', 'sticky': 'we'}),
                     ]}),
                 ]}),
             ])
-            style.configure('Mode.TMenubutton', padding=(10, 4), anchor='w')
+            style.configure('Mode.TMenubutton', padding=0, anchor='w', font='TkTextFont',
+                            background=style.lookup('TEntry', 'background'),
+                            foreground=style.lookup('TEntry', 'foreground'))
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
         header = ttk.Frame(outer)

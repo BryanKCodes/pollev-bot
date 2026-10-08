@@ -14,7 +14,7 @@ def make_icons(master, color):
         'timer': [(9, 5, 9, 9), (9, 9, 12, 11)],
         'logout': [(8, 3, 3, 3), (3, 3, 3, 15), (3, 15, 8, 15),
                    (8, 9, 16, 9), (12, 5, 16, 9), (16, 9, 12, 13)],
-        'chevron': [(5, 7, 9, 11), (9, 11, 13, 7)],
+        'chevron': [(3, 5, 7, 9), (7, 9, 11, 5)],
         'play': [], 'stop': [],
     }
     circles = {'person': (9, 5, 2.5), 'timer': (9, 9, 6.5)}
@@ -27,9 +27,10 @@ def make_icons(master, color):
 
     icons = {}
     for name, lines in segments.items():
-        icon = tk.PhotoImage(master=master, width=18, height=18)
-        for y in range(18):
-            for x in range(18):
+        size = 14 if name == 'chevron' else 18
+        icon = tk.PhotoImage(master=master, width=size, height=size)
+        for y in range(size):
+            for x in range(size):
                 filled = any(near_line(x, y, line) for line in lines)
                 if name in circles:
                     cx, cy, radius = circles[name]
