@@ -10,9 +10,9 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse
 
-from requests import RequestException
+from requests import RequestException, Session
 from requests.cookies import create_cookie
 
 from .endpoints import endpoints
@@ -22,23 +22,6 @@ logger = logging.getLogger(__name__)
 
 class NusLoginError(RuntimeError):
     """The NUS browser session could not be connected to Poll Everywhere."""
-
-
-def _sso_url(session, host):
-    url = endpoints['firehose_auth'].format(host=host, timestamp=round(time.time() * 1000))
-    response = session.get(url, timeout=15)
-    response.raise_for_status()
-    sso_url = response.json().get('saml_login_url')
-    parsed = urlparse(sso_url or '')
-    if (parsed.scheme != 'https' or parsed.hostname != 'id.polleverywhere.com'
-            or parsed.path != '/auth/saml/nus_ad'):
-        raise NusLoginError('The course host did not advertise the NUS SSO URL.')
-
-    # Poll Everywhere returns the participant to this host after NUS SSO.
-    query = parse_qs(parsed.query)
-    query.update({'redirect': ['https://pollev.com/{}'.format(host)],
-                  'token_required': ['false']})
-    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 
 def _copy_participant_cookies(context, session, cookies=None):
@@ -53,14 +36,23 @@ def _copy_participant_cookies(context, session, cookies=None):
 
 
 def _identity_logged_in(context):
-    # A signed-in Poll Everywhere browser leaves the identity login page.
-    # An unauthenticated browser receives the login form with HTTP 200.
-    response = context.request.get('https://id.polleverywhere.com/login',
-                                   max_redirects=0, timeout=15000)
-    destination = urlparse(response.headers.get('location', ''))
-    return (response.status in (301, 302, 303, 307, 308)
-            and destination.hostname in ('www.polleverywhere.com',
-                                         'app.polleverywhere.com'))
+    # The participant frontend loads /api/profile and considers user.id > 0
+    # signed in. A waiting page or an anonymous participant cookie is insufficient.
+    # context.request shares Chrome's cookies. A Set-Cookie from a probe must
+    # never overwrite the browser session that holds an in-progress OAuth flow.
+    with Session() as probe:
+        _copy_participant_cookies(context, probe)
+        with probe.get(endpoints['participant_profile'], allow_redirects=False,
+                       timeout=15) as response:
+            if not 200 <= response.status_code < 300:
+                raise NusLoginError('Participant account check returned HTTP {}.'.format(
+                    response.status_code))
+            data = response.json()
+            user = data.get('user') if isinstance(data, dict) else None
+            user_id = user.get('id') if isinstance(user, dict) else None
+            if isinstance(user_id, str) and user_id.isdecimal():
+                user_id = int(user_id)
+            return isinstance(user_id, int) and not isinstance(user_id, bool) and user_id > 0
 
 
 def _participant_session_present(session):
@@ -70,8 +62,78 @@ def _participant_session_present(session):
 
 
 def _session_state(context, session):
+    identity_ready = _identity_logged_in(context)
     _copy_participant_cookies(context, session)
-    return _identity_logged_in(context), _participant_session_present(session)
+    return identity_ready, _participant_session_present(session)
+
+
+def _copy_exchanged_cookies(context, session):
+    """Keep the browser in sync after the HTTP client exchanges an SSO token."""
+    cookies = []
+    for cookie in session.cookies:
+        if cookie.domain.lstrip('.') != 'pollev.com' or cookie.is_expired():
+            continue
+        item = dict(name=cookie.name, value=cookie.value, domain=cookie.domain,
+                    path=cookie.path, secure=cookie.secure,
+                    httpOnly=cookie.has_nonstandard_attr('HttpOnly'))
+        if cookie.expires is not None:
+            item['expires'] = cookie.expires
+        cookies.append(item)
+    if cookies:
+        context.add_cookies(cookies)
+
+
+def _close_login_context(context):
+    try:
+        context.close()
+    except Exception as exc:
+        logger.debug('Sign-in browser already closed: %s', type(exc).__name__)
+
+
+def _login_page(context, previous=None):
+    pages = [page for page in context.pages if not page.is_closed()]
+    if not pages:
+        raise NusLoginError('Sign-in window closed before login was verified. '
+                            'Click Start again and leave Chrome open until sign-in finishes.')
+    return previous if previous in pages else pages[-1]
+
+
+def _authentication_error_page(context):
+    message = re.compile('We encountered a problem while trying to authenticate you',
+                         re.IGNORECASE)
+    for page in context.pages:
+        if page.is_closed() or urlparse(page.url).hostname not in (
+                'pollev.com', 'www.polleverywhere.com', 'id.polleverywhere.com'):
+            continue
+        error = page.get_by_text(message)
+        if error.count() and error.first.is_visible():
+            return page
+    return None
+
+
+def _open_course_login(page, host, cancel_event):
+    """Use the participant site's own login link and its return/token parameters."""
+    page.goto(endpoints['home'].format(host=host),
+              wait_until='domcontentloaded', timeout=30000)
+    page.bring_to_front()
+    deadline = time.monotonic() + 5
+    name = re.compile(r'^(?:log|sign)\s*in\b', re.IGNORECASE)
+    while time.monotonic() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            raise NusLoginError('Sign-in cancelled.')
+        for frame in page.frames:
+            selectors = (frame.get_by_role('link', name=name),
+                         frame.get_by_role('button', name=name),
+                         frame.get_by_text(name))
+            for candidates in selectors:
+                for index in range(candidates.count()):
+                    candidate = candidates.nth(index)
+                    if candidate.is_visible():
+                        candidate.click(timeout=15000)
+                        return
+        # The login link may appear only after the participant app initializes.
+        page.wait_for_timeout(250)
+    logger.info('Use the course page\'s Log in button to sign in with NUS.')
 
 
 def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
@@ -82,12 +144,11 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
     the SSO callback provides one. No NUS password or MFA code is handled here.
     """
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import Error as PlaywrightError, sync_playwright
     except ImportError as exc:
         raise NusLoginError(
             'NUS login needs Playwright. Install requirements-nus.txt locally.') from exc
 
-    sso_url = _sso_url(session, host)
     profile = Path(profile_dir or Path(__file__).resolve().parent.parent / '.pollev-auth')
     profile.mkdir(mode=0o700, parents=True, exist_ok=True)
     profile.chmod(0o700)
@@ -108,52 +169,92 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
                 logger.warning('Saved login could not be verified (%s); sign in again.',
                                type(exc).__name__)
             finally:
-                context.close()
+                _close_login_context(context)
 
         try:
             context = playwright.chromium.launch_persistent_context(
                 str(profile), channel='chrome', headless=False)
         except Exception as exc:
             raise NusLoginError('Could not open Chrome for NUS SSO: {}'.format(exc)) from exc
+        browser_closed = [False]
         try:
             page = context.pages[0] if context.pages else context.new_page()
             auth_token = [None]
+            context.on('close', lambda *_: browser_closed.__setitem__(0, True))
 
-            def capture_token(frame):
-                if frame != page.main_frame:
-                    return
-                parsed = urlparse(frame.url)
-                if parsed.hostname not in ('pollev.com', 'www.polleverywhere.com',
-                                           'id.polleverywhere.com'):
-                    return
-                values = parse_qs(parsed.query).get('pe_auth_token')
-                if values:
-                    auth_token[0] = values[0]
+            def watch_page(target):
+                def capture_token(frame):
+                    if frame != target.main_frame:
+                        return
+                    parsed = urlparse(frame.url)
+                    if parsed.scheme != 'https' or parsed.hostname not in (
+                            'pollev.com', 'www.polleverywhere.com', 'id.polleverywhere.com'):
+                        return
+                    for parameters in (parsed.query, parsed.fragment.split('?', 1)[-1]):
+                        values = parse_qs(parameters).get('pe_auth_token')
+                        if values:
+                            auth_token[0] = values[0]
+                target.on('framenavigated', capture_token)
+                capture_token(target.main_frame)
 
-            page.on('framenavigated', capture_token)
+            for target in context.pages:
+                watch_page(target)
+            context.on('page', watch_page)
             logger.info('Complete NUS sign-in and MFA in the Chrome window.')
             if notify_action:
                 notify_action('Complete NUS sign-in and MFA in Chrome, then finish any respondent-name prompt.')
-            page.goto(sso_url, wait_until='domcontentloaded', timeout=30000)
-            page.bring_to_front()
+            try:
+                _open_course_login(page, host, cancel_event)
+            except PlaywrightError:
+                if not page.is_closed():
+                    raise
+                page = _login_page(context)
             deadline = time.monotonic() + timeout
             attempted_token = None
+            token_attempts = 0
+            next_exchange = 0
+            next_warning = 0
             prompted_for_name = False
+            authentication_error_reported = False
             while time.monotonic() < deadline:
                 if cancel_event is not None and cancel_event.is_set():
                     raise NusLoginError('Sign-in cancelled.')
-                if auth_token[0] and auth_token[0] != attempted_token:
+                if browser_closed[0]:
+                    raise NusLoginError('Sign-in browser closed before login was verified. '
+                                        'Click Start again and leave Chrome open until sign-in finishes.')
+                page = _login_page(context, page)
+                error_page = _authentication_error_page(context)
+                if error_page is not None and not authentication_error_reported:
+                    logger.warning('Poll Everywhere reported an authentication error. '
+                                   'Click "please try again" in Chrome to restart sign-in.')
+                    error_page.bring_to_front()
+                    if notify_action:
+                        notify_action('Poll Everywhere sign-in failed. Click "please try again" in Chrome.')
+                    authentication_error_reported = True
+                elif error_page is None:
+                    authentication_error_reported = False
+                if auth_token[0] != attempted_token:
                     attempted_token = auth_token[0]
-                    if exchange_token:
-                        try:
-                            exchange_token(attempted_token)
-                        except RequestException as exc:
-                            logger.warning('Could not exchange participant token: %s',
-                                           type(exc).__name__)
+                    token_attempts = 0
+                    next_exchange = 0
+                if (attempted_token and exchange_token and token_attempts < 3
+                        and time.monotonic() >= next_exchange):
+                    token_attempts += 1
+                    next_exchange = time.monotonic() + 2 ** token_attempts
+                    try:
+                        _copy_participant_cookies(context, session)
+                        if exchange_token(attempted_token):
+                            _copy_exchanged_cookies(context, session)
+                            token_attempts = 3
+                    except RequestException as exc:
+                        logger.warning('Could not exchange participant token: %s',
+                                       type(exc).__name__)
                 try:
                     identity_ready, participant_ready = _session_state(context, session)
                     if identity_ready and participant_ready:
                         logger.info('NUS SSO participant session established.')
+                        if notify_action:
+                            notify_action('Signed in. Connecting to the course host…')
                         return
                     if identity_ready and not participant_ready and not prompted_for_name:
                         logger.info('Finish the respondent name prompt in Chrome.')
@@ -162,13 +263,30 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
                             notify_action('Finish the respondent-name prompt in Chrome to connect your account.')
                         prompted_for_name = True
                 except Exception as exc:
-                    logger.warning('Could not check browser session: %s', type(exc).__name__)
-                page.wait_for_timeout(2000)
+                    if browser_closed[0]:
+                        raise NusLoginError('Sign-in browser closed before login was verified.') from exc
+                    if time.monotonic() >= next_warning:
+                        logger.warning('Could not verify the participant account yet (%s).',
+                                       type(exc).__name__)
+                        next_warning = time.monotonic() + 30
+                try:
+                    page.wait_for_timeout(2000)
+                except PlaywrightError:
+                    # SSO can finish in a new tab and close the original one.
+                    page = _login_page(context)
             raise NusLoginError(
-                'NUS sign-in did not establish a Poll Everywhere participant session '
-                'before the login timeout.')
+                'Poll Everywhere did not confirm a signed-in participant before the login timeout. '
+                'Use the course page\'s Log in flow and finish any respondent-name prompt.')
+        except PlaywrightError as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise NusLoginError('Sign-in cancelled.') from exc
+            if browser_closed[0] or not context.pages:
+                raise NusLoginError('Sign-in window closed before login was verified. '
+                                    'Click Start again and leave Chrome open until sign-in finishes.') from exc
+            raise NusLoginError('Could not complete browser sign-in ({}).'.format(
+                type(exc).__name__)) from exc
         finally:
-            context.close()
+            _close_login_context(context)
 
 
 def assist_host_check_in(session, host, verify, profile_dir=None,

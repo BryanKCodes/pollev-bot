@@ -52,7 +52,7 @@ On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead. On Li
 1. Enter the **Presenter** name or full `pollev.com/host` URL.
 2. Choose an answer mode and how long to run. For Theme, enter a topic such as `NLP transformers`.
 3. For LLM or Theme, click **Download Qwen model** once (about 1.12 GB), or **Choose GGUF** to select your own model. The download automatically selects the model.
-4. Click **Start**. On your first run, Chrome opens for NUS sign-in and MFA. Complete any respondent-name prompt too.
+4. Click **Start**. On your first run, use the course page's **Log in** flow in Chrome to complete NUS sign-in, MFA, and any respondent-name prompt. Leave Chrome open until the app confirms sign-in.
 5. If the course requires check-in, complete it in Chrome, allow location if requested, then click **I checked in**.
 6. Watch the updating status and activity logs. Click **Stop** to finish early.
 
