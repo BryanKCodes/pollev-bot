@@ -88,16 +88,20 @@ class Launcher:
             field_background = style.lookup('TEntry', 'background')
             field_rgb = self.root.winfo_rgb(field_background)
             text_rgb = self.root.winfo_rgb(icon_color)
+            # Use the previous border shade for the fill, with a lighter outline.
+            fill_rgb = tuple(base * 0.85 + text * 0.15
+                             for base, text in zip(field_rgb, text_rgb))
+            field_fill = '#{:02x}{:02x}{:02x}'.format(*(
+                round(channel / 257) for channel in fill_rgb))
             field_border = '#{:02x}{:02x}{:02x}'.format(*(
                 round((base * 0.85 + text * 0.15) / 257)
-                for base, text in zip(field_rgb, text_rgb)))
+                for base, text in zip(fill_rgb, text_rgb)))
             # A one-pixel image border avoids Clam's fixed two-pixel bevel.
             self.mode_field_image = tk.PhotoImage(master=self.root, width=3, height=3)
             self.mode_field_image.put(field_border, to=(0, 0, 3, 3))
-            field_fill = '#{:02x}{:02x}{:02x}'.format(*(channel // 257 for channel in field_rgb))
             self.mode_field_image.put(field_fill, to=(1, 1, 2, 2))
             style.element_create('Mode.field', 'image', self.mode_field_image,
-                                 border=1, padding=(1, 3, 1, 3), sticky='nswe')
+                                 border=1, padding=(5, 3, 5, 3), sticky='nswe')
             style.element_create('Mode.chevron', 'image', self.icons['chevron'])
             style.layout('Mode.TMenubutton', [
                 # Native Aqua entries reserve an inset outside their border.
@@ -109,7 +113,7 @@ class Launcher:
                     ]}),
                 ]}),
             ])
-            style.configure('Mode.TMenubutton', padding=(3, 3, 4, 4), anchor='w', font='TkTextFont',
+            style.configure('Mode.TMenubutton', padding=(3, 3, 2, 4), anchor='w', font='TkTextFont',
                             foreground=style.lookup('TEntry', 'foreground'))
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
