@@ -8,6 +8,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 from .launcher_settings import (BROWSER_PROFILE, LauncherSettings,
                                 clear_saved_login, saved_login_lock)
 from .model_setup import DEFAULT_MODEL_PATH, download_model, resolve_model_path
@@ -28,7 +29,7 @@ class QueueLogHandler(logging.Handler):
 class Launcher:
     def __init__(self, root):
         self.root = root
-        root.title('Poll Everywhere · Local bot')
+        root.title('PollEV Bot')
         root.geometry('680x720')
         root.minsize(600, 630)
         self.events = queue.Queue()
@@ -60,9 +61,13 @@ class Launcher:
         style = ttk.Style(self.root)
         style.configure('Title.TLabel', font=('Helvetica', 23, 'bold'))
         style.configure('Hint.TLabel', foreground='#666666')
+        self.model_heading_font = tkfont.nametofont('TkDefaultFont').copy()
+        heading_size = self.model_heading_font.cget('size')
+        self.model_heading_font.configure(size=heading_size + (1 if heading_size > 0 else -2))
+        style.configure('Model.TLabelframe.Label', font=self.model_heading_font)
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='Poll Everywhere', style='Title.TLabel').pack(anchor='w')
+        ttk.Label(outer, text='PollEV Bot', style='Title.TLabel').pack(anchor='w')
         form = ttk.Frame(outer)
         form.pack(fill='x', pady=(16, 0))
         form.columnconfigure(1, weight=1)
@@ -96,7 +101,8 @@ class Launcher:
         keep = ttk.Checkbutton(outer, text='Keep the course browser open while polling', variable=self.keep_browser)
         keep.pack(anchor='w', pady=(16, 5))
         self.inputs.append((keep, 'normal'))
-        model = ttk.LabelFrame(outer, text='Local model · needed for LLM and Theme', padding=10)
+        model = ttk.LabelFrame(outer, text='Local model · needed for LLM and Theme',
+                               padding=10, style='Model.TLabelframe')
         model.pack(fill='x', pady=16)
         ttk.Label(model, textvariable=self.model_status, wraplength=560).pack(anchor='w')
         model_actions = ttk.Frame(model)
@@ -126,7 +132,7 @@ class Launcher:
         style.configure('Log.Vertical.TScrollbar', background=background, troughcolor=background)
         scrollbar = ttk.Scrollbar(log_frame, orient='vertical', style='Log.Vertical.TScrollbar')
         scrollbar.pack(side='right', fill='y')
-        self.logs = tk.Text(log_frame, height=10, font=('Menlo', 11), wrap='word',
+        self.logs = tk.Text(log_frame, height=10, font=('Menlo', 10), wrap='word',
                             state='disabled', yscrollcommand=scrollbar.set,
                             borderwidth=0, highlightthickness=0)
         self.logs.pack(fill='both', expand=True)
@@ -302,17 +308,10 @@ class Launcher:
                     self.status.set(value)
                     if kind == 'check_in':
                         self.check_button.configure(state='normal')
-                        if not self.closing and not self.stop_event.is_set():
-                            self.root.bell()
-                            messagebox.showinfo('Check-in required',
-                                value + '\n\nAllow your real location if Chrome asks.', parent=self.root)
                     elif kind == 'check_done':
                         self.check_button.configure(state='disabled')
                 elif kind == 'action':
                     self.status.set(value)
-                    if not self.closing and not self.stop_event.is_set():
-                        self.root.bell()
-                        messagebox.showinfo('Action required', value, parent=self.root)
                 elif kind == 'model_ready':
                     self.model_path = value
                 elif kind == 'done':

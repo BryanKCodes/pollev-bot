@@ -69,8 +69,11 @@ With **Keep the course browser open** off, Chrome closes after login and opens
 again only if check-in or a text-response form is needed. With it on, the course
 window stays open until Stop or the duration expires. If a course asks you to
 check in, press its button and allow your real location in Chrome, then click
-**I checked in** in the launcher. A modal alerts you when check-in or
-sign-in needs your attention. The bot rechecks course access before resuming. Location is neither supplied nor emulated by the bot. If the course
+**I checked in** in the launcher. When sign-in needs attention, Chrome opens at
+the sign-in page. For check-in, Chrome opens or redirects to the course page
+and brings its tab forward. The launcher updates its status without an alert
+popup. The bot rechecks course access before resuming. Location is neither
+supplied nor emulated by the bot. If the course
 requires roster registration, the presenter must add your account.
 
 Keep the machine running with an internet connection. The Mac GUI uses

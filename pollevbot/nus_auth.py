@@ -135,6 +135,7 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
             if notify_action:
                 notify_action('Complete NUS sign-in and MFA in Chrome, then finish any respondent-name prompt.')
             page.goto(sso_url, wait_until='domcontentloaded', timeout=30000)
+            page.bring_to_front()
             deadline = time.monotonic() + timeout
             attempted_token = None
             prompted_for_name = False
@@ -156,6 +157,7 @@ def login(session, host, profile_dir=None, timeout=300, exchange_token=None,
                         return
                     if identity_ready and not participant_ready and not prompted_for_name:
                         logger.info('Finish the respondent name prompt in Chrome.')
+                        page.bring_to_front()
                         if notify_action:
                             notify_action('Finish the respondent-name prompt in Chrome to connect your account.')
                         prompted_for_name = True
@@ -343,6 +345,15 @@ class NusHostBrowser:
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 raise NusLoginError('Check-in cancelled.')
+            # Show the current host before waiting, even if Chrome stayed open.
+            try:
+                if self.page is None or self.page.is_closed():
+                    self.page = self.context.new_page()
+                self.page.goto(endpoints['home'].format(host=self.host),
+                               wait_until='domcontentloaded', timeout=30000)
+                self.page.bring_to_front()
+            except Exception as exc:
+                raise NusLoginError('Could not show the course check-in page in Chrome.') from exc
             try:
                 if confirm is not None:
                     if not confirm(deadline):
