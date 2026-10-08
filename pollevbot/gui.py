@@ -17,9 +17,9 @@ from .runtime_config import answer_provider_from_env, bot_options_from_env
 from .ui_icons import make_icons
 
 MODE_LABELS = {
-    'llm': 'LLM * AI answers based on visible questions',
-    'theme': 'Theme * 2–3 word topic phrases; random MCQs',
-    'random': 'Random * Random MCQs; skips text questions',
+    'llm': 'LLM • AI answers and natural replies (Recommended)',
+    'theme': 'Theme • Random MCQs + 2–3 word theme replies; best if hidden',
+    'random': 'Random • Random MCQs + “yes” replies; no model needed',
 }
 MODE_VALUES = {label: mode for mode, label in MODE_LABELS.items()}
 

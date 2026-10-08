@@ -56,7 +56,7 @@ class SubmissionUncertain(RuntimeError):
 class PollBot:
     """Poll a host and answer supported activities with an answer provider.
 
-    Random multiple-choice behavior remains the default. Set answer_mode to
+    Random MCQ choices and fixed text replies are the default. Set answer_mode to
     llm or theme for the optional local provider, or inject an AnswerProvider.
     An open-ended transport requires separately verified Poll Everywhere
     routes; a visible NUS browser can submit its displayed text form.
@@ -423,7 +423,7 @@ class PollBot:
             self.session, poll_id, text, token, self.request_timeout))
 
     def _generate_text_answer(self, poll_id: str, question: str) -> str:
-        if not question and self.answer_mode != 'theme':
+        if not question and self.answer_mode not in ('theme', 'random'):
             raise PollSkipped('missing_question')
         try:
             response = self.answer_provider.answer_open_ended(question)
@@ -442,12 +442,12 @@ class PollBot:
                 text = clean_open_ended_answer(response.text, self.max_open_chars)
         except InvalidAnswer as exc:
             raise RetryablePollError('invalid_provider_answer') from exc
-        logger.info('Activity %s: generated answer: %s', poll_id, text)
+        logger.info('Activity %s: text answer: %s', poll_id, text)
         return text
 
     def _answer_visible_text_poll(self, poll_id, browser, firehose_token):
         """Use the displayed participant form when no verified JSON route exists."""
-        if self.answer_mode not in ('llm', 'theme'):
+        if self.answer_mode not in ('llm', 'theme', 'random'):
             raise PollSkipped('text_response_not_supported_in_mode')
         try:
             question = browser.visible_text_question()
@@ -515,7 +515,7 @@ class PollBot:
                         return self._answer_visible_text_poll(
                             poll_id, browser, firehose_token)
                     if (self.login_type == 'nus' and self.browser_profile is not None
-                            and self.answer_mode in ('llm', 'theme')):
+                            and self.answer_mode in ('llm', 'theme', 'random')):
                         from .nus_auth import NusHostBrowser
                         try:
                             with NusHostBrowser(self.session, self.host,

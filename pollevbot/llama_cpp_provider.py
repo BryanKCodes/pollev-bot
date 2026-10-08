@@ -238,7 +238,8 @@ class LlamaCppProvider(AnswerProvider):
         if not isinstance(question, str) or not question.strip():
             raise AnswerUnavailable('No question text.')
         for attempt in range(2):
-            instruction = ('Answer the question in one direct sentence. Do not include '
+            instruction = ('Give a reasonable, natural answer to the question in one '
+                           'direct sentence. Do not include '
                            'a preamble, label, markdown, or commentary about the task.')
             if attempt:
                 instruction = ('Write only one short sentence answering the question. '

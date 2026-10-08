@@ -34,6 +34,10 @@ need a C/C++ compiler; see the
 On Linux, Tkinter may need your distribution's `python3-tk` package.
 On macOS you can also double-click **Launch PollEV.command** after setup.
 
+For Random mode only, install `requirements-nus.txt` instead of
+`requirements-desktop.txt`. Tkinter and Chrome are still needed, but neither
+llama-cpp-python nor a downloaded model is required.
+
 The launcher provides:
 
 - Presenter name or full `pollev.com/host` URL.
@@ -111,16 +115,22 @@ in the same user settings file. No `.env` file is needed.
 The model loads on the first answer and is reused while the launcher remains
 open. Random mode does not need a model.
 
-LLM mode uses visible questions to choose MCQ answers or generate short text.
+LLM mode is recommended for AI answers to visible questions and reasonable,
+natural text replies. It uses the local model to choose MCQ answers or generate
+short text; accuracy depends on the model and available question text.
 If the MCQ question is hidden, it falls back to a random option. Theme mode uses
 a course topic such as `nlp transformers` to generate a two or three word text
 phrase, including when the title is hidden; it uses random MCQ selection.
-Random mode answers MCQs and skips text responses. Presenter-only title text is
+Random mode selects random MCQs and submits the fixed text reply `yes.` for
+supported text activities, including hidden-title forms. It needs no model or
+model download. Theme is useful when questions are hidden; it needs the local
+model to generate its topic phrases. Presenter-only title text is
 not exposed by the participant workflow.
 
-For a text activity without a verified participant JSON route, LLM or Theme
+For a text activity without a verified participant JSON route, LLM, Theme, or Random
 uses the actual visible Chrome form. LLM requires a visible question; Theme can
-use a hidden-title form. The bot confirms the current activity ID before
+use a hidden-title form; Random uses its fixed reply regardless of the title.
+The bot confirms the current activity ID before
 clicking Submit. It records confirmed submissions and never resends an
 uncertain submission during that run. Answered IDs are held in memory; starting
 a new run resets that bookkeeping. If the visible text activity explicitly

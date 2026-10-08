@@ -5,13 +5,15 @@ from typing import List, Optional, Sequence, Tuple
 
 from .answerer import AnswerProvider, OptionSelection, TextAnswer
 
+RANDOM_TEXT_RESPONSE = 'yes.'
+
 
 class UnsupportedAnswerKind(RuntimeError):
     """A provider cannot generate this kind of answer."""
 
 
 class LegacyRandomProvider(AnswerProvider):
-    """Choose uniformly among the candidate options, as the old bot does.
+    """Choose random MCQ options and return a fixed text reply without a model.
 
     The caller supplies the already-filtered ordered candidates. The returned
     index refers to that list, which the caller maps back to the original ID.
@@ -25,7 +27,7 @@ class LegacyRandomProvider(AnswerProvider):
         return OptionSelection(self._rng.choice(range(len(options))))
 
     def answer_open_ended(self, question: str) -> TextAnswer:
-        raise UnsupportedAnswerKind('Legacy random mode supports multiple choice only.')
+        return TextAnswer(RANDOM_TEXT_RESPONSE)
 
 
 class FakeAnswerProvider(AnswerProvider):
