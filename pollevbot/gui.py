@@ -94,14 +94,16 @@ class Launcher:
             style.element_create('Mode.field', 'from', 'clam', 'Combobox.field')
             style.element_create('Mode.chevron', 'image', self.icons['chevron'])
             style.layout('Mode.TMenubutton', [
-                ('Mode.field', {'sticky': 'nswe', 'children': [
-                    ('Menubutton.padding', {'sticky': 'nswe', 'children': [
+                # Native Aqua entries reserve an inset outside their border.
+                # Put this padding outside the field so the visible edges align.
+                ('Menubutton.padding', {'sticky': 'nswe', 'children': [
+                    ('Mode.field', {'sticky': 'nswe', 'children': [
                         ('Mode.chevron', {'side': 'right', 'sticky': 'e'}),
                         ('Menubutton.label', {'side': 'left', 'sticky': 'we'}),
                     ]}),
                 ]}),
             ])
-            style.configure('Mode.TMenubutton', padding=(3, 3, 3, 4), anchor='w', font='TkTextFont',
+            style.configure('Mode.TMenubutton', padding=(3, 3, 4, 4), anchor='w', font='TkTextFont',
                             fieldbackground=field_background,
                             bordercolor=field_border, lightcolor=field_border,
                             foreground=style.lookup('TEntry', 'foreground'))
