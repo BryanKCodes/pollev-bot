@@ -14,6 +14,7 @@ from .launcher_settings import (BROWSER_PROFILE, LauncherSettings,
 from .model_setup import DEFAULT_MODEL_PATH, download_model, resolve_model_path
 from .pollbot import PollBot
 from .runtime_config import answer_provider_from_env, bot_options_from_env
+from .ui_icons import make_icons
 
 
 class QueueLogHandler(logging.Handler):
@@ -48,12 +49,15 @@ class Launcher:
         self.gpu_layers = settings.gpu_layers
         self.status = tk.StringVar(value='Ready. Choose your settings, then Start.')
         self.model_status = tk.StringVar()
+        self.account_status = tk.StringVar()
+        self._next_account_refresh = 0
         self.handler = QueueLogHandler(self.events)
         logging.getLogger('pollevbot').addHandler(self.handler)
         self._build()
         self.mode.trace_add('write', self._mode_changed)
         self._mode_changed()
         self._refresh_model()
+        self._refresh_account()
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self._drain_events)
 
@@ -64,22 +68,36 @@ class Launcher:
         self.model_heading_font = tkfont.nametofont('TkDefaultFont').copy()
         self.model_heading_font.configure(weight='bold')
         style.configure('Model.TLabelframe.Label', font=self.model_heading_font)
+        icon_color = style.lookup('TLabel', 'foreground') or '#555555'
+        rgb = self.root.winfo_rgb(icon_color)
+        icon_color = '#{:02x}{:02x}{:02x}'.format(*(channel // 257 for channel in rgb))
+        self.icons = make_icons(self.root, icon_color)
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='PollEV Bot', style='Title.TLabel').pack(anchor='w')
+        header = ttk.Frame(outer)
+        header.pack(fill='x')
+        ttk.Label(header, text='PollEV Bot', style='Title.TLabel').pack(side='left', anchor='n')
+        account = ttk.Frame(header)
+        account.pack(side='right', anchor='n')
+        self.logout_button = ttk.Button(account, text='Log Out', image=self.icons['logout'],
+                                        compound='left', command=self.log_out)
+        self.logout_button.pack(anchor='e')
+        ttk.Label(account, textvariable=self.account_status, style='Hint.TLabel',
+                  wraplength=240, justify='right').pack(anchor='e', pady=(4, 0))
         form = ttk.Frame(outer)
         form.pack(fill='x', pady=(16, 0))
         form.columnconfigure(1, weight=1)
         self.inputs = []
 
-        def label(text, row):
-            ttk.Label(form, text=text).grid(row=row, column=0, sticky='w', padx=(0, 18), pady=9)
+        def label(text, row, icon):
+            ttk.Label(form, text=text, image=self.icons[icon], compound='left').grid(
+                row=row, column=0, sticky='w', padx=(0, 18), pady=9)
 
-        label('Presenter / host', 0)
+        label('Presenter', 0, 'person')
         host_entry = ttk.Entry(form, textvariable=self.host)
         host_entry.grid(row=0, column=1, sticky='ew')
         self.inputs.append((host_entry, 'normal'))
-        label('Answer mode', 1)
+        label('Answer mode', 1, 'document')
         mode = ttk.Combobox(form, textvariable=self.mode, values=('LLM', 'Theme', 'Random'), state='readonly')
         mode.grid(row=1, column=1, sticky='ew')
         self.inputs.append((mode, 'readonly'))
@@ -88,7 +106,7 @@ class Launcher:
         self.theme_entry = ttk.Entry(form, textvariable=self.theme)
         self.theme_entry.grid(row=2, column=1, sticky='ew')
         self.inputs.append((self.theme_entry, 'normal'))
-        label('Run for', 3)
+        label('Run for', 3, 'timer')
         duration_row = ttk.Frame(form)
         duration_row.grid(row=3, column=1, sticky='ew')
         duration = ttk.Entry(duration_row, textvariable=self.duration, width=10)
@@ -113,15 +131,12 @@ class Launcher:
         self.inputs.append((self.browse_button, 'normal'))
         actions = ttk.Frame(outer)
         actions.pack(fill='x')
-        self.start_button = ttk.Button(actions, text='Start', command=self.start)
+        self.start_button = ttk.Button(actions, text='Start', command=self.start,
+                                       image=self.icons['play'], compound='left')
         self.start_button.pack(side='left')
-        self.stop_button = ttk.Button(actions, text='Stop', command=self.stop, state='disabled')
+        self.stop_button = ttk.Button(actions, text='Stop', command=self.stop, state='disabled',
+                                      image=self.icons['stop'], compound='left')
         self.stop_button.pack(side='left', padx=8)
-        self.save_button = ttk.Button(actions, text='Save settings', command=self.save)
-        self.save_button.pack(side='left')
-        self.account_button = ttk.Button(actions, text='Switch account', command=self.switch_account)
-        self.account_button.pack(side='left', padx=8)
-        self.inputs.append((self.account_button, 'normal'))
         self.check_button = ttk.Button(actions, text='I checked in', command=self.confirm, state='disabled')
         self.check_button.pack(side='right')
         ttk.Label(outer, textvariable=self.status, wraplength=600).pack(anchor='w', pady=14)
@@ -154,6 +169,13 @@ class Launcher:
         self.model_status.set(('Ready: ' if ready else 'Missing: ') + path.name)
         self.download_button.configure(state='disabled' if ready else 'normal')
 
+    def _refresh_account(self, busy=None):
+        cached = BROWSER_PROFILE.is_dir()
+        self.account_status.set('Browser cache present · checked on Start' if cached else 'No saved session · sign in on Start')
+        if busy is None:
+            busy = self.worker is not None
+        self.logout_button.configure(state='normal' if cached and not busy else 'disabled')
+
     def _settings(self):
         try:
             duration = float(self.duration.get())
@@ -162,13 +184,6 @@ class Launcher:
         return LauncherSettings(self.host.get(), self.mode.get().lower(), self.theme.get(),
                                 duration, self.unit.get(), self.keep_browser.get(),
                                 self.model_path, self.gpu_layers).validate()
-
-    def save(self):
-        try:
-            self._settings().save()
-            self.status.set('Settings saved.')
-        except (ValueError, OSError) as exc:
-            messagebox.showerror('Settings', str(exc), parent=self.root)
 
     def browse(self):
         path = filedialog.askopenfilename(parent=self.root, title='Choose a GGUF instruct model',
@@ -183,13 +198,13 @@ class Launcher:
             self._refresh_model()
             self.status.set('Model selected and saved.')
 
-    def switch_account(self):
-        if not messagebox.askyesno('Switch account',
-                'Clear this user’s saved login? You will sign in again on the next Start.', parent=self.root):
+    def log_out(self):
+        if self.worker is not None:
             return
         try:
             clear_saved_login()
-            self.status.set('Saved login cleared. Start to sign in with your account.')
+            self._refresh_account()
+            self.status.set('Logged out of the bot. Start to sign in again.')
         except (RuntimeError, OSError) as exc:
             messagebox.showerror('Could not clear login', str(exc), parent=self.root)
 
@@ -197,8 +212,8 @@ class Launcher:
         for widget, state in self.inputs:
             widget.configure(state='disabled' if busy else state)
         self.start_button.configure(state='disabled' if busy else 'normal')
-        self.save_button.configure(state='disabled' if busy else 'normal')
         self.stop_button.configure(state='normal' if busy else 'disabled')
+        self._refresh_account(busy)
         if busy:
             self.download_button.configure(state='disabled')
         else:
@@ -327,6 +342,9 @@ class Launcher:
                     self.status.set(value)
         except queue.Empty:
             pass
+        if time.monotonic() >= self._next_account_refresh:
+            self._refresh_account()
+            self._next_account_refresh = time.monotonic() + 2
         if self.closing and self.worker is None:
             logging.getLogger('pollevbot').removeHandler(self.handler)
             self.root.destroy()

@@ -41,11 +41,13 @@ The launcher provides:
 - Numeric duration with minutes or hours. The timer starts after sign-in.
 - A **Keep the course browser open** checkbox.
 - Model status, a **Download Qwen model** button, and a GGUF file picker.
-- Start, Stop, Save settings, and **I checked in** controls.
+- Start, Stop, and **I checked in** controls, with icons on the main controls
+  and presenter/mode/duration labels.
+- A **Log Out** button and browser-cache status in the top right.
 - One updating status line and an event log for questions, answers, and errors.
 
 Host, mode, theme, duration, browser preferences, and model selection are saved
-when you click Save settings or Start, in `.pollev-users/<user-id>/settings.json`.
+automatically when you click Start, in `.pollev-users/<user-id>/settings.json`.
 `POLLHOST` is not needed in `.env`; the GUI uses your host input directly.
 The desktop launcher does not read `.env` or environment overrides. Model path
 and GPU layers are saved with user preferences; other runtime controls have
@@ -57,9 +59,13 @@ Start checks your saved Chrome session and reuses it while it is valid. A first
 run or expired session opens Chrome for manual NUS sign-in, MFA, and any
 respondent-name prompt. Chrome session cookies remain locally in that user's
 `browser/` directory. There are no password or MFA fields in the launcher.
-Use **Switch account** to clear this saved session and sign in again on the next
-Start. Users sharing one OS login also share this cache, so switch accounts when
-needed. Fresh clones contain no settings or login cache.
+Use **Log Out** in the top right to clear the bot's saved browser session and
+sign in again on the next Start. The button is enabled when a browser cache
+exists and the bot is idle; it is disabled during polling/downloads or when
+there is no cache to clear. Cache status reports local browser data, not proof
+that an account's session is still valid; Start verifies it. Users sharing one
+OS login also share this cache, so log out when changing accounts. Fresh clones
+contain no settings or login cache.
 
 Only one local bot can use the saved login at a time. A second run reports that
 the existing run must stop, instead of launching Chrome against a locked
