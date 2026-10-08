@@ -18,10 +18,11 @@ from .ui_icons import make_icons
 
 MODE_LABELS = {
     'llm': 'LLM • AI answers and natural replies (Recommended)',
-    'theme': 'Theme • Random MCQs + 2–3 word theme replies; best if hidden',
-    'random': 'Random • Random MCQs + “yes” replies; no model needed',
+    'theme': 'Theme • Random MCQs + 2–3 word themed replies (Best if questions are hidden)',
+    'random': 'Random • Random MCQs + “yes” replies (No model needed)',
 }
-MODE_VALUES = {label: mode for mode, label in MODE_LABELS.items()}
+MODE_NAMES = {'llm': 'LLM', 'theme': 'Theme', 'random': 'Random'}
+MODE_VALUES = {name: mode for mode, name in MODE_NAMES.items()}
 
 
 class QueueLogHandler(logging.Handler):
@@ -47,7 +48,7 @@ class Launcher:
         self.closing = False
         settings = LauncherSettings.load()
         self.host = tk.StringVar(value=settings.host)
-        self.mode = tk.StringVar(value=MODE_LABELS[settings.mode])
+        self.mode = tk.StringVar(value=MODE_NAMES[settings.mode])
         self.theme = tk.StringVar(value=settings.theme)
         self.duration = tk.StringVar(value=format(settings.duration, 'g'))
         self.unit = tk.StringVar(value=settings.unit)
@@ -105,10 +106,14 @@ class Launcher:
         host_entry.grid(row=0, column=1, sticky='ew')
         self.inputs.append((host_entry, 'normal'))
         label('Answer mode', 1, 'document')
-        mode = ttk.Combobox(form, textvariable=self.mode,
-                            values=tuple(MODE_LABELS.values()), state='readonly')
+        mode = ttk.Menubutton(form, textvariable=self.mode, direction='below')
+        mode_menu = tk.Menu(mode, tearoff=False)
+        for value, description in MODE_LABELS.items():
+            mode_menu.add_radiobutton(label=description, variable=self.mode,
+                                      value=MODE_NAMES[value])
+        mode.configure(menu=mode_menu)
         mode.grid(row=1, column=1, sticky='ew')
-        self.inputs.append((mode, 'readonly'))
+        self.inputs.append((mode, 'normal'))
         self.theme_label = ttk.Label(form, text='Course theme')
         self.theme_label.grid(row=2, column=0, sticky='w', pady=9)
         self.theme_entry = ttk.Entry(form, textvariable=self.theme)
@@ -165,7 +170,7 @@ class Launcher:
         host_entry.focus_set()
 
     def _mode_changed(self, *_):
-        if self.mode.get() == MODE_LABELS['theme']:
+        if self.mode.get() == MODE_NAMES['theme']:
             self.theme_label.grid()
             self.theme_entry.grid()
         else:

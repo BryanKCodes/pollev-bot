@@ -41,7 +41,8 @@ llama-cpp-python nor a downloaded model is required.
 The launcher provides:
 
 - Presenter name or full `pollev.com/host` URL.
-- LLM, Theme, or Random mode. Theme reveals a course-topic field.
+- LLM, Theme, or Random mode. The open menu shows descriptions; the closed
+  selector shows only the mode name. Theme reveals a course-topic field.
 - Numeric duration with minutes or hours. The timer starts after sign-in.
 - A **Keep the course browser open** checkbox.
 - Model status, a **Download Qwen model** button, and a GGUF file picker.
