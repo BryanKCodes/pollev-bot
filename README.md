@@ -43,7 +43,7 @@ The launcher provides:
 - Model status, a **Download Qwen model** button, and a GGUF file picker.
 - Start, Stop, and **I checked in** controls, with icons on the main controls
   and presenter/mode/duration labels.
-- A **Log Out** button and browser-cache status in the top right.
+- A **Log Out** button in the top right.
 - One updating status line and an event log for questions, answers, and errors.
 
 Host, mode, theme, duration, browser preferences, and model selection are saved
@@ -62,8 +62,7 @@ respondent-name prompt. Chrome session cookies remain locally in that user's
 Use **Log Out** in the top right to clear the bot's saved browser session and
 sign in again on the next Start. The button is enabled when a browser cache
 exists and the bot is idle; it is disabled during polling/downloads or when
-there is no cache to clear. Cache status reports local browser data, not proof
-that an account's session is still valid; Start verifies it. Users sharing one
+there is no cache to clear. Start verifies the saved session. Users sharing one
 OS login also share this cache, so log out when changing accounts. Fresh clones
 contain no settings or login cache.
 

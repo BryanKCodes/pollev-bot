@@ -49,7 +49,6 @@ class Launcher:
         self.gpu_layers = settings.gpu_layers
         self.status = tk.StringVar(value='Ready. Choose your settings, then Start.')
         self.model_status = tk.StringVar()
-        self.account_status = tk.StringVar()
         self._next_account_refresh = 0
         self.handler = QueueLogHandler(self.events)
         logging.getLogger('pollevbot').addHandler(self.handler)
@@ -64,7 +63,10 @@ class Launcher:
     def _build(self):
         style = ttk.Style(self.root)
         style.configure('Title.TLabel', font=('Helvetica', 23, 'bold'))
-        style.configure('Hint.TLabel', foreground='#666666')
+        self.status_font = tkfont.nametofont('TkDefaultFont').copy()
+        status_size = self.status_font.cget('size')
+        self.status_font.configure(size=status_size + (1 if status_size > 0 else -2))
+        style.configure('Status.TLabel', font=self.status_font)
         self.model_heading_font = tkfont.nametofont('TkDefaultFont').copy()
         self.model_heading_font.configure(weight='bold')
         style.configure('Model.TLabelframe.Label', font=self.model_heading_font)
@@ -82,8 +84,6 @@ class Launcher:
         self.logout_button = ttk.Button(account, text='Log Out', image=self.icons['logout'],
                                         compound='left', command=self.log_out)
         self.logout_button.pack(anchor='e')
-        ttk.Label(account, textvariable=self.account_status, style='Hint.TLabel',
-                  wraplength=240, justify='right').pack(anchor='e', pady=(4, 0))
         form = ttk.Frame(outer)
         form.pack(fill='x', pady=(16, 0))
         form.columnconfigure(1, weight=1)
@@ -139,7 +139,8 @@ class Launcher:
         self.stop_button.pack(side='left', padx=8)
         self.check_button = ttk.Button(actions, text='I checked in', command=self.confirm, state='disabled')
         self.check_button.pack(side='right')
-        ttk.Label(outer, textvariable=self.status, wraplength=600).pack(anchor='w', pady=14)
+        ttk.Label(outer, textvariable=self.status, wraplength=600,
+                  style='Status.TLabel').pack(anchor='w', pady=14)
         log_frame = ttk.Frame(outer)
         log_frame.pack(fill='both', expand=True)
         background = style.lookup('TFrame', 'background') or self.root.cget('background')
@@ -171,7 +172,6 @@ class Launcher:
 
     def _refresh_account(self, busy=None):
         cached = BROWSER_PROFILE.is_dir()
-        self.account_status.set('Browser cache present · checked on Start' if cached else 'No saved session · sign in on Start')
         if busy is None:
             busy = self.worker is not None
         self.logout_button.configure(state='normal' if cached and not busy else 'disabled')
