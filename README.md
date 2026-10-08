@@ -2,6 +2,10 @@
 
 A desktop app that watches a Poll Everywhere presenter and automatically answers supported multiple-choice and text activities. Built for NUS sign-in, with manual MFA and an optional local AI model.
 
+<p align="center">
+  <img src="assets/bot-gui.png" alt="PollEV Bot desktop interface" width="480">
+</p>
+
 ## Answer modes
 
 | Mode | What it does |
