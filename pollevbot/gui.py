@@ -16,6 +16,13 @@ from .pollbot import PollBot
 from .runtime_config import answer_provider_from_env, bot_options_from_env
 from .ui_icons import make_icons
 
+MODE_LABELS = {
+    'llm': 'LLM * AI answers based on visible questions',
+    'theme': 'Theme * 2–3 word topic phrases; random MCQs',
+    'random': 'Random * Random MCQs; skips text questions',
+}
+MODE_VALUES = {label: mode for mode, label in MODE_LABELS.items()}
+
 
 class QueueLogHandler(logging.Handler):
     def __init__(self, events):
@@ -40,7 +47,7 @@ class Launcher:
         self.closing = False
         settings = LauncherSettings.load()
         self.host = tk.StringVar(value=settings.host)
-        self.mode = tk.StringVar(value=settings.mode.title() if settings.mode != 'llm' else 'LLM')
+        self.mode = tk.StringVar(value=MODE_LABELS[settings.mode])
         self.theme = tk.StringVar(value=settings.theme)
         self.duration = tk.StringVar(value=format(settings.duration, 'g'))
         self.unit = tk.StringVar(value=settings.unit)
@@ -98,7 +105,8 @@ class Launcher:
         host_entry.grid(row=0, column=1, sticky='ew')
         self.inputs.append((host_entry, 'normal'))
         label('Answer mode', 1, 'document')
-        mode = ttk.Combobox(form, textvariable=self.mode, values=('LLM', 'Theme', 'Random'), state='readonly')
+        mode = ttk.Combobox(form, textvariable=self.mode,
+                            values=tuple(MODE_LABELS.values()), state='readonly')
         mode.grid(row=1, column=1, sticky='ew')
         self.inputs.append((mode, 'readonly'))
         self.theme_label = ttk.Label(form, text='Course theme')
@@ -157,7 +165,7 @@ class Launcher:
         host_entry.focus_set()
 
     def _mode_changed(self, *_):
-        if self.mode.get() == 'Theme':
+        if self.mode.get() == MODE_LABELS['theme']:
             self.theme_label.grid()
             self.theme_entry.grid()
         else:
@@ -181,7 +189,7 @@ class Launcher:
             duration = float(self.duration.get())
         except ValueError as exc:
             raise ValueError('Enter a number for the duration.') from exc
-        return LauncherSettings(self.host.get(), self.mode.get().lower(), self.theme.get(),
+        return LauncherSettings(self.host.get(), MODE_VALUES[self.mode.get()], self.theme.get(),
                                 duration, self.unit.get(), self.keep_browser.get(),
                                 self.model_path, self.gpu_layers).validate()
 
