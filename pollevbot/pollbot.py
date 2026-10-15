@@ -534,6 +534,10 @@ class PollBot:
                                                self.max_option)
                 if not candidates:
                     raise PollSkipped('no_candidate_options')
+                for index, option in enumerate(candidates, start=1):
+                    logger.info('Activity %s: option %s/%s: %s', poll_id,
+                                index, len(candidates),
+                                _preview(option.text) or '(text unavailable)')
                 choice_provider = self.answer_provider
                 if self.answer_mode == 'theme' or (self.answer_mode == 'llm'
                                                     and not activity.question):

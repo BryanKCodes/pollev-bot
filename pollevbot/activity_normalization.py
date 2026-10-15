@@ -97,7 +97,7 @@ def _options(payload: Mapping):
             return None
         seen_ids.add(option_id)
         text = ''
-        for field in ('text', 'title', 'label'):
+        for field in ('text', 'title', 'label', 'value'):
             if isinstance(item.get(field), str):
                 text = _clean_text(item[field])
                 if text:
