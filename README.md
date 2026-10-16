@@ -59,3 +59,7 @@ On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead. On Li
 Settings and login sessions are saved locally for your OS user; **no `.env` file is needed**. Use **Log Out** to clear the saved session. Models, settings, and browser caches are ignored by Git.
 
 Keep your computer awake and connected to the internet. The Mac launcher prevents idle sleep while running, but closing the lid or manually sleeping still interrupts it.
+
+The feed automatically retries connection failures. During a network interruption,
+the status shows **Reconnecting** and keeps the last connected poll time; polling
+resumes automatically when the connection returns.

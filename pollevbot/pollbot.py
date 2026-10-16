@@ -10,6 +10,8 @@ import time
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .activity import ActivityKind
 from .activity_normalization import MULTIPLE_CHOICE_ENDPOINT, normalize_activity
@@ -25,6 +27,7 @@ from .open_ended_transport import OpenEndedTransport
 logger = logging.getLogger(__name__)
 __all__ = ['PollBot']
 _STATUS_INTERVAL = 60
+_FEED_ORIGIN = 'https://firehose-production.polleverywhere.com/'
 
 
 def _preview(value: str, limit: int = 160) -> str:
@@ -146,6 +149,12 @@ class PollBot:
                           'AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/70.0.3538.102 Safari/537.36'
         }
+        # Retry connection setup for feed GETs only. A read timeout is normal
+        # while an idle feed waits for an activity; never retry submissions.
+        self._feed_adapter = HTTPAdapter(max_retries=Retry(
+            total=1, connect=1, read=False, status=0, redirect=0,
+            allowed_methods=frozenset({'GET'}), backoff_factor=0.5))
+        self.session.mount(_FEED_ORIGIN, self._feed_adapter)
         self.answered_polls = set()
         self.skipped_polls = set()
         self.attempted_polls = set()
@@ -154,11 +163,17 @@ class PollBot:
         self._retry_after = {}
         self._next_firehose_warning_at = 0.0
         self._idle_status_visible = False
+        self._feed_error = None
+        self._last_feed_poll = None
 
     def _show_idle_status(self) -> bool:
         """Refresh one terminal line after a check with no new activity."""
-        message = 'Polling host {}. Last poll: {}'.format(
-            self.host, time.strftime('%H:%M:%S'))
+        if self._feed_error is not None:
+            message = 'Reconnecting to host {} ({}). Last poll: {}'.format(
+                self.host, self._feed_error, self._last_feed_poll or 'not yet')
+        else:
+            message = 'Polling host {}. Last poll: {}'.format(
+                self.host, self._last_feed_poll or time.strftime('%H:%M:%S'))
         if self.status_callback is not None:
             self.status_callback(message)
             return True
@@ -293,7 +308,8 @@ class PollBot:
         return token
 
     def get_new_poll_id(self, firehose_token=None, *,
-                        allow_in_flight=False, timeout=0.3) -> Optional[str]:
+                        allow_in_flight=False, timeout=1.0) -> Optional[str]:
+        """Read a feed snapshot with separate connect and idle-read budgets."""
         if firehose_token:
             url = endpoints['firehose_with_token'].format(
                 host=self.host, token=firehose_token, timestamp=self.timestamp())
@@ -301,31 +317,39 @@ class PollBot:
             url = endpoints['firehose_no_token'].format(
                 host=self.host, timestamp=self.timestamp())
         try:
-            response = self.session.get(url, timeout=timeout)
+            response = self.session.get(
+                url, timeout=(min(5.0, self.request_timeout), timeout))
             if response.status_code in (401, 403):
                 raise LoginError('The course activity feed requires sign-in or check-in.')
             response.raise_for_status()
             message = json.loads(response.json()['message'])
             if not isinstance(message, dict):
-                return None
+                raise ValueError('Invalid feed message')
             error = message.get('error')
             if isinstance(error, dict) and error.get('type') == 'ExpiredSubscription':
                 raise FeedExpired('The activity feed subscription expired.')
             if isinstance(error, dict) and error.get('type') == 'UnauthorizedSubscription':
                 raise LoginError('The course activity feed rejected this account.')
             if error:
+                error_type = error.get('type') if isinstance(error, dict) else type(error).__name__
+                self._feed_error = str(error_type or 'feed_error')
                 now = time.monotonic()
                 if now >= self._next_firehose_warning_at:
                     self._clear_idle_status()
-                    error_type = error.get('type') if isinstance(error, dict) else type(error).__name__
                     logger.warning('Activity feed returned an error (%s); retrying.',
                                    _preview(str(error_type), 60))
                     self._next_firehose_warning_at = now + _STATUS_INTERVAL
                 return None
             poll_id = message.get('uid')
-        except (requests.exceptions.ReadTimeout, KeyError):
+        except requests.exceptions.ReadTimeout:
+            self._feed_connected()
             return None
-        except (requests.RequestException, ValueError, TypeError) as exc:
+        except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+            self._feed_error = type(exc).__name__
+            if isinstance(exc, requests.exceptions.ConnectionError):
+                # Clear only the feed's connection pool; retain login cookies,
+                # headers, response bookkeeping, and the participant session.
+                self._feed_adapter.close()
             now = time.monotonic()
             if now >= self._next_firehose_warning_at:
                 self._clear_idle_status()
@@ -333,6 +357,7 @@ class PollBot:
                                type(exc).__name__)
                 self._next_firehose_warning_at = now + _STATUS_INTERVAL
             return None
+        self._feed_connected()
         if not isinstance(poll_id, (str, int)) or isinstance(poll_id, bool):
             return None
         poll_id = str(poll_id)
@@ -342,6 +367,13 @@ class PollBot:
                 or time.monotonic() < self._retry_after.get(poll_id, 0)):
             return None
         return poll_id
+
+    def _feed_connected(self):
+        if self._feed_error is not None:
+            self._clear_idle_status()
+            logger.info('Activity feed connection restored for host %s.', self.host)
+        self._feed_error = None
+        self._last_feed_poll = time.strftime('%H:%M:%S')
 
     def _fetch_activity(self, poll_id: str):
         url = endpoints['poll_data'].format(uid=poll_id)
@@ -670,6 +702,7 @@ class PollBot:
                         self._sleep(self.closed_wait)
                         continue
                 try:
+                    feed_check_started = time.monotonic()
                     poll_id = pending_poll_id or self.get_new_poll_id(token)
                     pending_poll_id = None
                 except LoginError as exc:
@@ -691,6 +724,8 @@ class PollBot:
                         try:
                             new_token = self.get_firehose_token()
                             candidate = self.get_new_poll_id(new_token)
+                            if self._feed_error is not None:
+                                return None
                         except LoginError:
                             return None
                         except (ValueError, requests.RequestException) as verify_error:
@@ -722,13 +757,16 @@ class PollBot:
                 expired_refreshes = 0
                 self._show_idle_status()
                 if poll_id is None:
-                    if self.status_callback is None and not sys.stderr.isatty():
+                    if (self._feed_error is None and self.status_callback is None
+                            and not sys.stderr.isatty()):
                         now = time.monotonic()
                         if now >= next_status_at:
                             logger.info('Still polling host %s; no new activity handled.',
                                         self.host)
                             next_status_at = now + _STATUS_INTERVAL
-                    self._sleep(self.closed_wait)
+                    # Count the request's time toward the polling interval.
+                    self._sleep(max(0, self.closed_wait -
+                                    (time.monotonic() - feed_check_started)))
                     continue
                 self._clear_idle_status()
                 if self._failures.get(poll_id, 0) == 0:
