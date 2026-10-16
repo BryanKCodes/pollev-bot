@@ -101,8 +101,10 @@ class LauncherSettings:
             self.host = normalize_host(self.host)
         else:
             self.host = ''
-        if self.mode not in ('llm', 'theme', 'random'):
-            raise ValueError('Select LLM, Theme, or Random.')
+        if self.mode == 'theme':
+            self.mode = 'llm'
+        if self.mode not in ('llm', 'random'):
+            raise ValueError('Select LLM or Random.')
         if (self.unit not in ('minutes', 'hours') or not math.isfinite(self.duration)
                 or self.duration <= 0 or not math.isfinite(self.lifetime)):
             raise ValueError('Duration must be a positive number of minutes or hours.')
@@ -111,8 +113,8 @@ class LauncherSettings:
         if isinstance(self.gpu_layers, bool) or not isinstance(self.gpu_layers, int) or self.gpu_layers < -1:
             raise ValueError('GPU layers must be -1 or a non-negative integer.')
         self.theme = ' '.join(self.theme.split())
-        if len(self.theme) > 120 or (require_ready and self.mode == 'theme' and not self.theme):
-            raise ValueError('Enter a theme with 1 to 120 characters.')
+        if len(self.theme) > 120:
+            raise ValueError('Fallback theme must be at most 120 characters.')
         return self
 
     @classmethod

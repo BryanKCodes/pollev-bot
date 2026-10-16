@@ -26,11 +26,11 @@
             "value": "uw"
         },
         "ANSWER_MODE": {
-            "description": "Answer strategy: random, llm, theme with a local GGUF model, or skip",
+            "description": "Answer strategy: random or llm with attendance fallbacks; legacy skip disables answering",
             "value": "random"
         },
         "ANSWER_THEME": {
-            "description": "Course topic for theme mode; required when no interactive terminal is available",
+            "description": "Optional LLM fallback topic or reply format (e.g. NLP transformers or MCQ); blank replies yes",
             "required": false
         },
         "MIN_OPTION": {
@@ -54,11 +54,11 @@
             "value": "15"
         },
         "POLL_RETRY_LIMIT": {
-            "description": "Maximum safe attempts before skipping an activity",
+            "description": "Feed subscription refresh attempts before asking for check-in; unsent activities keep retrying while active",
             "value": "3"
         },
         "POLL_RETRY_BACKOFF": {
-            "description": "Initial retry delay in seconds; later delays double",
+            "description": "Initial retry delay in seconds; activity waits grow up to the polling interval",
             "value": "2"
         },
         "LLM_BACKEND": {
@@ -66,7 +66,7 @@
             "value": "llama_cpp"
         },
         "LLM_MODEL_PATH": {
-            "description": "Absolute path to a provisioned GGUF model; needed in llm and theme modes",
+            "description": "GGUF model path for AI answers; random, theme-word and yes fallbacks work without a model",
             "required": false
         },
         "LLM_CONTEXT_SIZE": {
@@ -102,7 +102,7 @@
             "value": "280"
         },
         "LLM_FAILURE_POLICY": {
-            "description": "On MCQ model failure: skip by default or explicitly choose random",
+            "description": "Low-level MCQ provider policy (skip or random); the launcher additionally falls back to a random option",
             "value": "skip"
         },
         "LLM_SEED": {

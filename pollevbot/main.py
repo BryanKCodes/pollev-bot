@@ -17,22 +17,22 @@ def _choose_mode(default):
     """Ask for a mode only in an interactive local terminal."""
     if not sys.stdin.isatty():
         return default
-    choices = {'1': 'llm', '2': 'theme', '3': 'random',
-               'llm': 'llm', 'theme': 'theme', 'random': 'random'}
+    choices = {'1': 'llm', '2': 'random', 'llm': 'llm', 'random': 'random'}
     while True:
-        choice = input('Select mode [1. LLM] [2. Theme] [3. Random]: ').strip().lower()
+        choice = input('Select mode [1. LLM] [2. Random]: ').strip().lower()
         if choice in choices:
             return choices[choice]
-        print('Choose 1, 2, or 3.')
+        print('Choose 1 or 2.')
 
 
 def main():
     parser = argparse.ArgumentParser(description='Poll Everywhere participant bot')
     parser.add_argument('--check-login', action='store_true',
                         help='verify login and host connection without polling or answering')
-    parser.add_argument('--mode', choices=('llm', 'theme', 'random', 'skip'),
+    parser.add_argument('--mode', choices=('llm', 'random'),
                         help='choose an answer mode without the interactive menu')
-    parser.add_argument('--theme', help='course theme for theme mode')
+    parser.add_argument('--fallback-theme', '--theme', dest='theme',
+                        help='optional LLM fallback topic or reply format, e.g. MCQ')
     parser.add_argument('--host', help='presenter name or pollev.com URL')
     args = parser.parse_args()
     load_dotenv(ENV_PATH)
@@ -64,14 +64,12 @@ def main():
     else:
         try:
             options['answer_mode'] = args.mode or _choose_mode(options['answer_mode'])
-            if options['answer_mode'] == 'theme':
-                theme = args.theme or options.get('answer_theme', '')
+            if options['answer_mode'] == 'llm':
+                theme = args.theme if args.theme is not None else options.get('answer_theme', '')
                 if sys.stdin.isatty() and args.theme is None:
-                    typed = input('Course theme{}: '.format(
+                    typed = input('Fallback theme (optional){}; Enter keeps this value: '.format(
                         ' [{}]'.format(theme) if theme else '')).strip()
                     theme = typed or theme
-                if not theme:
-                    parser.error('Theme mode needs a theme prompt or ANSWER_THEME.')
                 options['answer_theme'] = theme
             else:
                 options.pop('answer_theme', None)

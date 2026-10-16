@@ -24,6 +24,18 @@ class NusLoginError(RuntimeError):
     """The NUS browser session could not be connected to Poll Everywhere."""
 
 
+class NusResponseNotReady(NusLoginError):
+    """The response form failed before any submission was attempted."""
+
+
+class NusResponseRateLimited(NusLoginError):
+    """The server explicitly rejected a response with HTTP 429."""
+
+    def __init__(self, retry_after=None):
+        super().__init__('Poll Everywhere rate limited the response.')
+        self.retry_after = retry_after
+
+
 def _copy_participant_cookies(context, session, cookies=None):
     for cookie in (context.cookies('https://pollev.com') if cookies is None else cookies):
         domain = cookie['domain'].lstrip('.')
@@ -371,22 +383,48 @@ class NusHostBrowser:
 
     def _text_response_form(self):
         """Find the visible, unanswered text form on the participant page."""
-        if self.page is None:
+        if self.page is None or self.page.is_closed():
             return None
         for frame in self.page.frames:
-            field = frame.get_by_placeholder('Type here...', exact=True)
-            submit = frame.get_by_role('button', name='Submit', exact=True)
-            if field.count() != 1 or submit.count() != 1 or not field.is_visible():
+            if frame.is_detached():
+                continue
+            submits = frame.get_by_role('button', name=re.compile(
+                r'^(?:submit|send)(?:\s+(?:your\s+)?(?:answer|response))?$', re.IGNORECASE))
+            buttons = [submits.nth(i) for i in range(submits.count())
+                       if submits.nth(i).is_visible()]
+            if len(buttons) != 1:
+                continue
+            # Do not mistake login/name fields for a response. Prefer explicit
+            # response placeholders, then textareas or answer-labelled inputs.
+            selectors = (
+                frame.get_by_placeholder(re.compile(
+                    r'type here|(?:enter|type) (?:(?:your|an?|the) )?(?:answer|response)|your response',
+                    re.IGNORECASE)),
+                frame.locator('textarea:not([readonly]):not([disabled])'),
+                frame.get_by_role('textbox', name=re.compile(r'answer|response', re.IGNORECASE)),
+            )
+            field = None
+            for selector in selectors:
+                visible = [selector.nth(i) for i in range(selector.count())
+                           if selector.nth(i).is_visible() and selector.nth(i).is_enabled()
+                           and selector.nth(i).get_attribute('readonly') is None]
+                if len(visible) == 1:
+                    field = visible[0]
+                    break
+                if len(visible) > 1:
+                    break
+            if field is None:
                 continue
             body = frame.locator('body').inner_text(timeout=2000)
-            if 'You have not responded' not in body:
+            if re.search(r'^\s*you (?:have (?:already )?)?responded\b', body,
+                         re.IGNORECASE | re.MULTILINE):
                 continue
-            if 'Activity title hidden' in body:
+            if re.search(r'activity title (?:is )?hidden', body, re.IGNORECASE):
                 question = ''
             else:
                 headings = frame.locator('h1, h2').all_inner_texts()
                 question = next((text.strip() for text in headings if text.strip()), '')
-            return field, submit, question
+            return field, buttons[0], question
         return None
 
     def visible_text_question(self):
@@ -397,12 +435,31 @@ class NusHostBrowser:
             raise NusLoginError('Could not inspect the course response form.') from exc
         return None if form is None else form[2]
 
+    def wait_for_text_question(self, timeout=8, cancel_event=None):
+        """Allow the participant app to render a response field after navigation."""
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                question = self.visible_text_question()
+                if question is not None:
+                    return question
+                if self.page is None or self.page.is_closed():
+                    return None
+                self.page.wait_for_timeout(250)
+            return None
+        except Exception as exc:
+            raise NusResponseNotReady('The response form is still loading or unavailable.') from exc
+
     def already_responded(self):
         """Recognise an explicit participant confirmation without submitting."""
-        if self.page is None:
+        if self.page is None or self.page.is_closed():
             return False
         try:
             for frame in self.page.frames:
+                if frame.is_detached() or frame.locator('body').count() == 0:
+                    continue
                 body = frame.locator('body').inner_text(timeout=2000)
                 if re.search(r'^\s*you (?:have (?:already )?)?responded\b', body,
                              re.IGNORECASE | re.MULTILINE):
@@ -411,18 +468,28 @@ class NusHostBrowser:
             raise NusLoginError('Could not inspect the participant response status.') from exc
         return False
 
-    def submit_visible_text(self, text, expected_question):
+    def submit_visible_text(self, text, expected_question, before_submit=None):
         """Submit through the actual participant form and observe its response."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         try:
-            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             form = self._text_response_form()
             if form is None or form[2] != expected_question:
-                raise NusLoginError('The visible text activity changed before submission.')
+                raise NusResponseNotReady('The visible text activity changed before submission.')
             field, submit, _ = form
             field.fill(text, timeout=5000)
+            deadline = time.monotonic() + 5
+            while not submit.is_enabled() and time.monotonic() < deadline:
+                self.page.wait_for_timeout(100)
             if not submit.is_enabled():
-                raise NusLoginError('The text activity submit button is disabled.')
+                raise NusResponseNotReady('The text activity submit button is disabled.')
+        except NusResponseNotReady:
+            raise
+        except Exception as exc:
+            raise NusResponseNotReady('Could not prepare the visible text response.') from exc
 
+        if before_submit is not None:
+            before_submit()
+        try:
             def is_submission(response):
                 parsed = urlparse(response.url)
                 host = parsed.hostname or ''
@@ -436,6 +503,8 @@ class NusHostBrowser:
                 response = event.value
             except PlaywrightTimeoutError as exc:
                 raise NusLoginError('Could not confirm the browser submission.') from exc
+            if response.status == 429:
+                raise NusResponseRateLimited(response.headers.get('retry-after'))
             if not response.ok:
                 raise NusLoginError('Browser submission returned HTTP {}.'.format(
                     response.status))

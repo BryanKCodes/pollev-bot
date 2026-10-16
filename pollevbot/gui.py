@@ -17,11 +17,10 @@ from .runtime_config import answer_provider_from_env, bot_options_from_env
 from .ui_icons import make_icons
 
 MODE_LABELS = {
-    'llm': 'LLM • AI answers and natural replies (Recommended)',
-    'theme': 'Theme • Random MCQs + 2–3 word themed replies (Best if questions are hidden)',
+    'llm': 'LLM • AI answers with theme or “yes” fallback (Recommended)',
     'random': 'Random • Random MCQs + “yes” replies (No model needed)',
 }
-MODE_NAMES = {'llm': 'LLM', 'theme': 'Theme', 'random': 'Random'}
+MODE_NAMES = {'llm': 'LLM', 'random': 'Random'}
 MODE_VALUES = {name: mode for mode, name in MODE_NAMES.items()}
 
 
@@ -149,14 +148,17 @@ class Launcher:
         mode.configure(menu=mode_menu)
         mode.grid(row=1, column=1, sticky='ew')
         self.inputs.append((mode, 'normal'))
-        self.theme_label = ttk.Label(form, text='Course theme')
+        self.theme_label = ttk.Label(form, text='Fallback theme')
         self.theme_label.grid(row=2, column=0, sticky='w', pady=9)
         self.theme_entry = ttk.Entry(form, textvariable=self.theme)
         self.theme_entry.grid(row=2, column=1, sticky='ew')
         self.inputs.append((self.theme_entry, 'normal'))
-        label('Run for', 3, 'timer')
+        self.theme_hint = ttk.Label(form,
+            text='Optional: NLP transformers or MCQ (A–D). Blank uses “yes”.', wraplength=380)
+        self.theme_hint.grid(row=3, column=1, sticky='w', pady=(0, 4))
+        label('Run for', 4, 'timer')
         duration_row = ttk.Frame(form)
-        duration_row.grid(row=3, column=1, sticky='ew')
+        duration_row.grid(row=4, column=1, sticky='ew')
         duration = ttk.Entry(duration_row, textvariable=self.duration, width=10)
         duration.pack(side='left', padx=(0, 8))
         units = ttk.Combobox(duration_row, textvariable=self.unit, values=('minutes', 'hours'),
@@ -166,7 +168,7 @@ class Launcher:
         keep = ttk.Checkbutton(outer, text='Keep the course browser open while polling', variable=self.keep_browser)
         keep.pack(anchor='w', pady=(16, 5))
         self.inputs.append((keep, 'normal'))
-        model = ttk.LabelFrame(outer, text='Local model · needed for LLM and Theme',
+        model = ttk.LabelFrame(outer, text='Local model · used by LLM mode',
                                padding=10, style='Model.TLabelframe')
         model.pack(fill='x', pady=16)
         ttk.Label(model, textvariable=self.model_status, wraplength=560).pack(anchor='w')
@@ -205,12 +207,14 @@ class Launcher:
         host_entry.focus_set()
 
     def _mode_changed(self, *_):
-        if self.mode.get() == MODE_NAMES['theme']:
+        if self.mode.get() == MODE_NAMES['llm']:
             self.theme_label.grid()
             self.theme_entry.grid()
+            self.theme_hint.grid()
         else:
             self.theme_label.grid_remove()
             self.theme_entry.grid_remove()
+            self.theme_hint.grid_remove()
 
     def _refresh_model(self):
         path = resolve_model_path(self.model_path)
@@ -272,10 +276,6 @@ class Launcher:
             return
         try:
             settings = self._settings()
-            if settings.mode != 'random':
-                from .llama_cpp_provider import LlamaCppConfig
-                LlamaCppConfig.from_env(settings.runtime_values())
-                import llama_cpp  # Confirm the inference dependency before sign-in.
             import playwright.sync_api
             settings.save()
         except (ValueError, OSError, ImportError) as exc:

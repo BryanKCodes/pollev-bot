@@ -89,3 +89,13 @@ def clean_theme_answer(raw: str, max_chars: int = 64) -> str:
                    for word in words)):
         raise InvalidAnswer('invalid_theme_phrase')
     return text
+
+
+def clean_submission_answer(raw: str, max_chars: int = 280) -> str:
+    """Validate short replies without adding punctuation to letters or phrases."""
+    text = clean_open_ended_answer(raw, max_chars + 1)
+    if not raw.rstrip().endswith(('.', '!', '?')):
+        text = text.removesuffix('.')
+    if len(text) > max_chars:
+        raise InvalidAnswer('text_too_long')
+    return text

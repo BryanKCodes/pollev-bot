@@ -10,8 +10,7 @@ A desktop app that watches a Poll Everywhere presenter and automatically answers
 
 | Mode | What it does |
 | --- | --- |
-| **LLM** | Uses local AI to answer visible questions and write short, natural replies. Recommended when questions are visible. |
-| **Theme** | Picks random MCQ options and writes 2–3 word replies about your chosen topic. Useful when questions are hidden. |
+| **LLM** | Answers visible questions with local AI. If an answer is unavailable, uses your optional fallback theme, or `yes.` if blank. MCQs fall back to a random option. |
 | **Random** | Picks random MCQ options and replies `yes.` to text questions. No model needed. |
 
 ## Get started
@@ -50,8 +49,8 @@ On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead. On Li
 ## Using the app
 
 1. Enter the **Presenter** name or full `pollev.com/host` URL.
-2. Choose an answer mode and how long to run. For Theme, enter a topic such as `NLP transformers`.
-3. For LLM or Theme, click **Download Qwen model** once (about 1.12 GB), or **Choose GGUF** to select your own model. The download automatically selects the model.
+2. Choose **LLM** or **Random** and how long to run. In LLM mode, optionally enter a **Fallback theme**: `NLP transformers` produces short topic phrases; `MCQ` produces an A–D letter reply for a text activity. You can specify `MCQ A or B` to limit the letters. Leave it blank for `yes.`.
+3. For AI answers, click **Download Qwen model** once (about 1.12 GB), or **Choose GGUF** to select your own model. The download automatically selects the model. If the model is unavailable, responses still fall back to random MCQ choices and theme words or `yes.`.
 4. Click **Start**. On your first run, use the course page's **Log in** flow in Chrome to complete NUS sign-in, MFA, and any respondent-name prompt. Leave Chrome open until the app confirms sign-in.
 5. If the course requires check-in, complete it in Chrome, allow location if requested, then click **I checked in**.
 6. Watch the updating status and activity logs. Click **Stop** to finish early.
@@ -63,3 +62,9 @@ Keep your computer awake and connected to the internet. The Mac launcher prevent
 The feed automatically retries connection failures. During a network interruption,
 the status shows **Reconnecting** and keeps the last connected poll time; polling
 resumes automatically when the connection returns.
+
+Hidden questions use the configured fallback immediately. If a text form is still
+loading, the bot prepares a reply and keeps retrying while that activity is active,
+instead of giving up after three attempts. Chrome stays open while the form is
+needed. A closed poll or pending check-in still needs an available response form;
+confirmed and uncertain submissions are never sent twice.

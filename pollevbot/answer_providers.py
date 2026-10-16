@@ -1,11 +1,15 @@
 """Non-LLM answer providers for legacy behavior and deterministic fixtures."""
 
+import logging
 import random
+import re
 from typing import List, Optional, Sequence, Tuple
 
 from .answerer import AnswerProvider, OptionSelection, TextAnswer
+from .answer_validation import clean_submission_answer
 
 RANDOM_TEXT_RESPONSE = 'yes.'
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedAnswerKind(RuntimeError):
@@ -28,6 +32,79 @@ class LegacyRandomProvider(AnswerProvider):
 
     def answer_open_ended(self, question: str) -> TextAnswer:
         return TextAnswer(RANDOM_TEXT_RESPONSE)
+
+
+class ResilientAnswerProvider(AnswerProvider):
+    """Try the model, then a theme, and always retain a usable local fallback."""
+
+    def __init__(self, primary=None, theme='', theme_provider=None):
+        self.primary = primary
+        self.theme = ' '.join(theme.split())
+        self.theme_provider = theme_provider
+        self.config = getattr(primary, 'config', None)
+        self.max_open_chars = getattr(self.config, 'max_open_chars', 280)
+        self.random = LegacyRandomProvider()
+
+    def select_option(self, question: str, options: Sequence[str]) -> OptionSelection:
+        if not options:
+            raise ValueError('No candidate options are available.')
+        if self.primary is not None and question and all(options):
+            try:
+                answer = self.primary.select_option(question, options)
+                if (not isinstance(answer, OptionSelection) or isinstance(answer.index, bool)
+                        or not isinstance(answer.index, int) or not 0 <= answer.index < len(options)):
+                    raise ValueError('Invalid model option selection.')
+                return answer
+            except Exception as exc:
+                logger.warning('MCQ model answer unavailable (%s); selecting a random option.',
+                               type(exc).__name__)
+        else:
+            logger.info('Question or choice text unavailable; selecting a random option.')
+        return self.random.select_option(question, options)
+
+    def _local_theme_answer(self):
+        if re.search(r'\bmcq\b|multiple[ -]choice', self.theme, re.IGNORECASE):
+            letters = []
+            for first, last in re.findall(r'\b([A-Z])\s*[-–—]\s*([A-Z])\b', self.theme):
+                step = 1 if first <= last else -1
+                letters.extend(chr(code) for code in range(ord(first), ord(last) + step, step))
+            letters.extend(re.findall(r'\b[A-Z]\b', self.theme))
+            letters = tuple(dict.fromkeys(letters)) or tuple('ABCD')
+            return random.choice(letters)
+        words = re.findall(r"[\w]+(?:[-/'][\w]+)*", self.theme, re.UNICODE)
+        if not words:
+            return RANDOM_TEXT_RESPONSE
+        return ' '.join(words[:3]) if len(words) > 1 else words[0] + ' concepts'
+
+    def answer_open_ended(self, question: str) -> TextAnswer:
+        if self.primary is not None and question:
+            try:
+                answer = self.primary.answer_open_ended(question)
+                return TextAnswer(clean_submission_answer(answer.text, self.max_open_chars))
+            except Exception as exc:
+                logger.warning('Text model answer unavailable (%s); using fallback.',
+                               type(exc).__name__)
+        if self.theme:
+            # MCQ is a reply-format instruction, not a two-word course topic.
+            is_mcq = re.search(r'\bmcq\b|multiple[ -]choice', self.theme, re.IGNORECASE)
+            if self.theme_provider is not None and not is_mcq:
+                try:
+                    answer = self.theme_provider.answer_open_ended('')
+                    text = clean_submission_answer(answer.text, self.max_open_chars)
+                    logger.info('Using the fallback theme for this text response.')
+                    return TextAnswer(text)
+                except Exception as exc:
+                    logger.warning('Theme generation unavailable (%s); using theme words.',
+                                   type(exc).__name__)
+            text = self._local_theme_answer()
+            try:
+                text = clean_submission_answer(text, self.max_open_chars)
+            except ValueError:
+                text = RANDOM_TEXT_RESPONSE[:self.max_open_chars]
+            logger.info('Using a local theme fallback for this text response.')
+            return TextAnswer(text)
+        logger.info('Using the default text fallback: %s', RANDOM_TEXT_RESPONSE)
+        return TextAnswer(RANDOM_TEXT_RESPONSE[:self.max_open_chars])
 
 
 class FakeAnswerProvider(AnswerProvider):

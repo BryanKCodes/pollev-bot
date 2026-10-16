@@ -3,10 +3,12 @@
 import json
 import logging
 import math
+import os
 import shutil
 import sys
 import tempfile
 import time
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import requests
@@ -17,11 +19,10 @@ from .activity import ActivityKind
 from .activity_normalization import MULTIPLE_CHOICE_ENDPOINT, normalize_activity
 from .answer_providers import LegacyRandomProvider, UnsupportedAnswerKind
 from .answer_validation import (InvalidAnswer, candidate_options,
-                                clean_theme_answer,
-                                clean_open_ended_answer, resolve_option_id)
+                                clean_submission_answer, resolve_option_id)
 from .answerer import AnswerProvider, TextAnswer
 from .endpoints import endpoints
-from .nus_auth import NusLoginError
+from .nus_auth import NusLoginError, NusResponseNotReady, NusResponseRateLimited
 from .open_ended_transport import OpenEndedTransport
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ class PollBot:
     """Poll a host and answer supported activities with an answer provider.
 
     Random MCQ choices and fixed text replies are the default. Set answer_mode to
-    llm or theme for the optional local provider, or inject an AnswerProvider.
+    llm for the optional local provider and attendance fallbacks.
     An open-ended transport requires separately verified Poll Everywhere
     routes; a visible NUS browser can submit its displayed text form.
     """
@@ -83,11 +84,13 @@ class PollBot:
         login_type = login_type.lower()
         if login_type not in {'uw', 'pollev', 'nus'}:
             raise ValueError('Unsupported login_type: {!r}'.format(login_type))
-        if answer_mode not in {'random', 'llm', 'theme', 'skip'}:
-            raise ValueError('answer_mode must be random, llm, theme, or skip')
-        if answer_mode == 'theme' and not (isinstance(answer_theme, str)
-                                           and answer_theme.strip()):
-            raise ValueError('answer_theme is required for theme mode')
+        if answer_mode == 'theme':
+            answer_mode = 'llm'
+        if answer_mode not in {'random', 'llm', 'skip'}:
+            raise ValueError('answer_mode must be random, llm, or skip')
+        if answer_theme is not None and (not isinstance(answer_theme, str)
+                                          or len(answer_theme) > 120):
+            raise ValueError('Fallback theme must be at most 120 characters.')
         if not isinstance(retry_limit, int) or isinstance(retry_limit, bool) or retry_limit < 1:
             raise ValueError('retry_limit must be a positive integer')
         if lifetime <= 0 or math.isnan(lifetime):
@@ -132,13 +135,16 @@ class PollBot:
         if answer_provider is not None:
             self.answer_provider = answer_provider
         elif answer_mode == 'llm':
-            from .llama_cpp_provider import LlamaCppProvider
-            self.answer_provider = LlamaCppProvider.from_env()
-        elif answer_mode == 'theme':
-            from .llama_cpp_provider import ThemeProvider
-            self.answer_provider = ThemeProvider.from_env(answer_theme)
+            from .runtime_config import answer_provider_from_env
+            values = dict(os.environ, ANSWER_MODE='llm')
+            if answer_theme is not None:
+                values['ANSWER_THEME'] = answer_theme
+            self.answer_provider = answer_provider_from_env(values)
         else:
             self.answer_provider = self._random_provider
+        if answer_mode == 'llm':
+            from .runtime_config import with_answer_fallbacks
+            self.answer_provider = with_answer_fallbacks(self.answer_provider, answer_theme or '')
         self.max_open_chars = (max_open_chars if max_open_chars is not None else
                                getattr(getattr(self.answer_provider, 'config', None),
                                        'max_open_chars', 280))
@@ -165,12 +171,19 @@ class PollBot:
         self._idle_status_visible = False
         self._feed_error = None
         self._last_feed_poll = None
+        self._pending_text_answers = {}
+        self._next_activity_warning = {}
+        self._response_browser = None
+        self._feed_activity_id = None
 
     def _show_idle_status(self) -> bool:
         """Refresh one terminal line after a check with no new activity."""
         if self._feed_error is not None:
             message = 'Reconnecting to host {} ({}). Last poll: {}'.format(
                 self.host, self._feed_error, self._last_feed_poll or 'not yet')
+        elif self._feed_activity_id in self._pending_text_answers:
+            message = 'Waiting for response form on {}. Last poll: {}'.format(
+                self.host, self._last_feed_poll or 'not yet')
         else:
             message = 'Polling host {}. Last poll: {}'.format(
                 self.host, self._last_feed_poll or time.strftime('%H:%M:%S'))
@@ -196,12 +209,18 @@ class PollBot:
 
     def __exit__(self, *args):
         try:
+            self._close_response_browser()
             self.session.close()
         finally:
             if self._temporary_profile is not None:
                 self._temporary_profile.cleanup()
                 self._temporary_profile = None
                 self.browser_profile = None
+
+    def _close_response_browser(self):
+        if self._response_browser is not None:
+            self._response_browser.__exit__(None, None, None)
+            self._response_browser = None
 
     @staticmethod
     def timestamp() -> float:
@@ -358,9 +377,13 @@ class PollBot:
                 self._next_firehose_warning_at = now + _STATUS_INTERVAL
             return None
         self._feed_connected()
-        if not isinstance(poll_id, (str, int)) or isinstance(poll_id, bool):
+        if (not isinstance(poll_id, (str, int)) or isinstance(poll_id, bool)
+                or poll_id == ''):
+            if 'uid' in message:
+                self._feed_activity_id = None
             return None
         poll_id = str(poll_id)
+        self._feed_activity_id = poll_id
         if (poll_id in self.answered_polls or poll_id in self.skipped_polls
                 or poll_id in self.attempted_polls
                 or (poll_id in self.in_flight_polls and not allow_in_flight)
@@ -424,6 +447,7 @@ class PollBot:
         if status_code == 429:
             # A rate-limit rejection is explicit; another attempt can be made.
             self.attempted_polls.discard(poll_id)
+            self._honor_retry_after(poll_id, response.headers.get('Retry-After'))
             raise RetryablePollError('submission_rate_limited')
         if not accepted:
             raise SubmissionUncertain('submission_http_{}'.format(status_code))
@@ -437,6 +461,19 @@ class PollBot:
                 or result.get('errors') or result.get('success') is False):
             raise SubmissionUncertain('submission_rejected')
         return result
+
+    def _honor_retry_after(self, poll_id, retry_after):
+        if not retry_after:
+            return
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            try:
+                delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                return
+        if math.isfinite(delay) and delay > 0:
+            self._retry_after[poll_id] = time.monotonic() + delay
 
     def _submit_multiple_choice(self, poll_id: str, option_id):
         def send(token):
@@ -455,31 +492,26 @@ class PollBot:
             self.session, poll_id, text, token, self.request_timeout))
 
     def _generate_text_answer(self, poll_id: str, question: str) -> str:
-        if not question and self.answer_mode not in ('theme', 'random'):
-            raise PollSkipped('missing_question')
+        question = question or ''
+        cached = self._pending_text_answers.get(poll_id)
+        if cached is not None and cached[0] == question:
+            return cached[1]
         try:
             response = self.answer_provider.answer_open_ended(question)
-        except UnsupportedAnswerKind as exc:
-            raise PollSkipped('provider_does_not_support_activity') from exc
+            if not isinstance(response, TextAnswer):
+                raise InvalidAnswer('invalid_text_answer_type')
+            text = clean_submission_answer(response.text, self.max_open_chars)
         except Exception as exc:
-            logger.warning('Activity %s: answer generation failed (%s).',
+            logger.warning('Activity %s: text answer unavailable (%s); using yes fallback.',
                            poll_id, type(exc).__name__)
-            raise RetryablePollError('answer_generation_failed') from exc
-        if not isinstance(response, TextAnswer):
-            raise RetryablePollError('invalid_text_answer_type')
-        try:
-            if self.answer_mode == 'theme':
-                text = clean_theme_answer(response.text, min(64, self.max_open_chars))
-            else:
-                text = clean_open_ended_answer(response.text, self.max_open_chars)
-        except InvalidAnswer as exc:
-            raise RetryablePollError('invalid_provider_answer') from exc
+            text = self._random_provider.answer_open_ended('').text[:self.max_open_chars]
+        self._pending_text_answers[poll_id] = (question, text)
         logger.info('Activity %s: text answer: %s', poll_id, text)
         return text
 
     def _answer_visible_text_poll(self, poll_id, browser, firehose_token):
         """Use the displayed participant form when no verified JSON route exists."""
-        if self.answer_mode not in ('llm', 'theme', 'random'):
+        if self.answer_mode not in ('llm', 'random'):
             raise PollSkipped('text_response_not_supported_in_mode')
         try:
             question = browser.visible_text_question()
@@ -502,6 +534,13 @@ class PollBot:
                 self._failures.pop(poll_id, None)
                 self._retry_after.pop(poll_id, None)
                 return {'already_answered': True}
+            # Prepare the fallback even before the response form has rendered.
+            self._generate_text_answer(poll_id, '')
+            try:
+                question = browser.wait_for_text_question(timeout=8, cancel_event=self.stop_event)
+            except NusLoginError as exc:
+                raise RetryablePollError('text_form_not_ready') from exc
+        if question is None:
             raise RetryablePollError('text_form_not_ready')
         logger.info('Activity %s: visible text question: %s', poll_id,
                     _preview(question) or '(hidden by presenter)')
@@ -515,11 +554,26 @@ class PollBot:
             raise RetryablePollError('current_activity_unconfirmed')
         if current_id != poll_id:
             raise PollSkipped('activity_changed_before_submission')
-        self._check_submission_allowed()
-        self.attempted_polls.add(poll_id)
+
+        def before_submit():
+            self._check_submission_allowed()
+            current_id = self.get_new_poll_id(firehose_token, allow_in_flight=True, timeout=2)
+            if current_id != poll_id:
+                raise RetryablePollError('current_activity_unconfirmed')
+            self._check_submission_allowed()
+            self.attempted_polls.add(poll_id)
+
         try:
-            result = browser.submit_visible_text(text, question)
+            result = browser.submit_visible_text(text, question, before_submit=before_submit)
+        except NusResponseRateLimited as exc:
+            self.attempted_polls.discard(poll_id)
+            self._honor_retry_after(poll_id, exc.retry_after)
+            raise RetryablePollError('submission_rate_limited') from exc
+        except NusResponseNotReady as exc:
+            raise RetryablePollError('text_form_not_ready') from exc
         except NusLoginError as exc:
+            if poll_id not in self.attempted_polls:
+                raise RetryablePollError('text_form_not_ready') from exc
             raise SubmissionUncertain('browser_submission_unconfirmed') from exc
         self.answered_polls.add(poll_id)
         self._failures.pop(poll_id, None)
@@ -547,13 +601,14 @@ class PollBot:
                         return self._answer_visible_text_poll(
                             poll_id, browser, firehose_token)
                     if (self.login_type == 'nus' and self.browser_profile is not None
-                            and self.answer_mode in ('llm', 'theme', 'random')):
+                            and self.answer_mode in ('llm', 'random')):
                         from .nus_auth import NusHostBrowser
                         try:
-                            with NusHostBrowser(self.session, self.host,
-                                                self.browser_profile) as temporary_browser:
-                                return self._answer_visible_text_poll(
-                                    poll_id, temporary_browser, firehose_token)
+                            if self._response_browser is None:
+                                self._response_browser = NusHostBrowser(
+                                    self.session, self.host, self.browser_profile).__enter__()
+                            return self._answer_visible_text_poll(
+                                poll_id, self._response_browser, firehose_token)
                         except NusLoginError as browser_error:
                             raise RetryablePollError('text_browser_open_failed') from browser_error
                 raise
@@ -562,6 +617,7 @@ class PollBot:
             if activity.kind is ActivityKind.UNSUPPORTED:
                 raise PollSkipped('unsupported_activity')
             if activity.kind is ActivityKind.MULTIPLE_CHOICE:
+                self._close_response_browser()
                 candidates = candidate_options(activity.options, self.min_option,
                                                self.max_option)
                 if not candidates:
@@ -571,17 +627,11 @@ class PollBot:
                                 index, len(candidates),
                                 _preview(option.text) or '(text unavailable)')
                 choice_provider = self.answer_provider
-                if self.answer_mode == 'theme' or (self.answer_mode == 'llm'
-                                                    and not activity.question):
+                if self.answer_mode == 'llm' and (not activity.question
+                                                 or any(not option.text for option in candidates)):
                     choice_provider = self._random_provider
-                    if self.answer_mode == 'llm':
-                        logger.warning('Activity %s: question unavailable; using '
-                                       'random multiple-choice fallback.', poll_id)
-                text_required = not isinstance(choice_provider, LegacyRandomProvider)
-                if not activity.question and text_required:
-                    raise PollSkipped('missing_question')
-                if text_required and any(not option.text for option in candidates):
-                    raise PollSkipped('missing_candidate_text')
+                    logger.warning('Activity %s: question or choice text unavailable; using '
+                                   'random multiple-choice fallback.', poll_id)
                 logger.info('Activity %s: selecting from %s options (%s mode).',
                             poll_id, len(candidates), self.answer_mode)
                 try:
@@ -616,6 +666,10 @@ class PollBot:
             return result
         finally:
             self.in_flight_polls.discard(poll_id)
+            if poll_id in self.answered_polls or poll_id in self.attempted_polls:
+                self._pending_text_answers.pop(poll_id, None)
+                self._next_activity_warning.pop(poll_id, None)
+                self._close_response_browser()
 
     def alive(self):
         return (not (self.stop_event is not None and self.stop_event.is_set())
@@ -637,15 +691,17 @@ class PollBot:
     def _record_retry(self, poll_id: str, reason: str):
         count = self._failures.get(poll_id, 0) + 1
         self._failures[poll_id] = count
-        if count >= self.retry_limit:
-            self.skipped_polls.add(poll_id)
-            logger.warning('Activity %s skipped after %s attempts: %s',
-                           poll_id, count, reason)
-            return
-        delay = self.retry_backoff * (2 ** (count - 1))
+        # These failures occur before submission, or after an explicit 429.
+        # Keep trying while this remains the active activity, with bounded waits.
+        initial_delay = max(1.0, self.retry_backoff)
+        delay = min(max(self.closed_wait, initial_delay),
+                    initial_delay * (2 ** min(count - 1, 3)))
+        delay = max(delay, self._retry_after.get(poll_id, 0) - time.monotonic())
         self._retry_after[poll_id] = time.monotonic() + delay
-        logger.warning('Activity %s: retry %s/%s in %.1fs: %s',
-                       poll_id, count + 1, self.retry_limit, delay, reason)
+        if time.monotonic() >= self._next_activity_warning.get(poll_id, 0):
+            logger.warning('Activity %s: waiting to respond; retrying in %.1fs while active: %s',
+                           poll_id, delay, reason)
+            self._next_activity_warning[poll_id] = time.monotonic() + _STATUS_INTERVAL
 
     def run(self):
         """Poll the host until lifetime expires, with bounded safe retries."""
@@ -687,8 +743,15 @@ class PollBot:
         expired_refreshes = 0
         try:
             while self.alive():
-                if browser is not None:
-                    browser.sync_cookies()
+                active_browser = browser or self._response_browser
+                if active_browser is not None:
+                    try:
+                        active_browser.sync_cookies()
+                    except NusLoginError:
+                        if active_browser is not self._response_browser:
+                            raise
+                        self._close_response_browser()
+                        active_browser = None
                 if token is None:
                     try:
                         token = self.get_firehose_token()
@@ -739,8 +802,8 @@ class PollBot:
                     check_in_timeout = min(self.login_timeout, max(
                         0, self.start_time + self.lifetime - time.time()))
                     try:
-                        if browser is not None:
-                            token, pending_poll_id = browser.assist_check_in(
+                        if active_browser is not None:
+                            token, pending_poll_id = active_browser.assist_check_in(
                                 verify_check_in, timeout=check_in_timeout,
                                 confirm=self.check_in_confirm, cancel_event=self.stop_event)
                         else:
@@ -754,6 +817,12 @@ class PollBot:
                         break
                     expired_refreshes = 0
                     continue
+                if self._feed_error is None:
+                    for previous_id in tuple(self._pending_text_answers):
+                        if previous_id != self._feed_activity_id:
+                            self._pending_text_answers.pop(previous_id, None)
+                    if self._feed_activity_id is None:
+                        self._close_response_browser()
                 expired_refreshes = 0
                 self._show_idle_status()
                 if poll_id is None:
@@ -782,6 +851,8 @@ class PollBot:
                     self._record_retry(poll_id, str(exc))
                 except PollSkipped as exc:
                     self.skipped_polls.add(poll_id)
+                    self._pending_text_answers.pop(poll_id, None)
+                    self._close_response_browser()
                     logger.info('Activity %s skipped: %s', poll_id, str(exc))
                 except SubmissionUncertain as exc:
                     self.skipped_polls.add(poll_id)
@@ -792,5 +863,6 @@ class PollBot:
                         logger.info('Activity %s response accepted.', poll_id)
                 next_status_at = time.monotonic() + _STATUS_INTERVAL
         finally:
+            self._close_response_browser()
             self._clear_idle_status()
         logger.info('Polling stopped for host %s.', self.host)
