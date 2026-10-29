@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -91,6 +91,7 @@ class LauncherSettings:
     keep_browser_open: bool = False
     model_path: str = DEFAULT_MODEL_PATH
     gpu_layers: int = -1 if sys.platform == 'darwin' and platform.machine() == 'arm64' else 0
+    recent_hosts: list[str] = field(default_factory=list)
 
     @property
     def lifetime(self):
@@ -115,7 +116,28 @@ class LauncherSettings:
         self.theme = ' '.join(self.theme.split())
         if len(self.theme) > 120:
             raise ValueError('Fallback theme must be at most 120 characters.')
+        if not isinstance(self.recent_hosts, list):
+            self.recent_hosts = []
+        normalized_hosts = []
+        for host in self.recent_hosts:
+            if not isinstance(host, str):
+                continue
+            try:
+                normalized = normalize_host(host)
+            except ValueError:
+                continue
+            if normalized not in normalized_hosts:
+                normalized_hosts.append(normalized)
+            if len(normalized_hosts) == 5:
+                break
+        self.recent_hosts = normalized_hosts
         return self
+
+    def remember_host(self):
+        """Add the current presenter to the front of the five-host history."""
+        host = normalize_host(self.host)
+        self.recent_hosts = [host] + [item for item in self.recent_hosts if item != host]
+        self.recent_hosts = self.recent_hosts[:5]
 
     @classmethod
     def load(cls, path=SETTINGS_PATH):

@@ -10,7 +10,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 from .launcher_settings import (BROWSER_PROFILE, LauncherSettings,
-                                clear_saved_login, saved_login_lock, save_model_selection)
+                                clear_saved_login, saved_login_lock,
+                                save_model_selection)
 from .model_setup import DEFAULT_MODEL_PATH, download_model, resolve_model_path
 from .pollbot import PollBot
 from .runtime_config import answer_provider_from_env, bot_options_from_env
@@ -47,6 +48,7 @@ class Launcher:
         self.closing = False
         settings = LauncherSettings.load()
         self.host = tk.StringVar(value=settings.host)
+        self.recent_hosts = list(settings.recent_hosts)
         self.mode = tk.StringVar(value=MODE_NAMES[settings.mode])
         self.theme = tk.StringVar(value=settings.theme)
         self.duration = tk.StringVar(value=format(settings.duration, 'g'))
@@ -60,6 +62,7 @@ class Launcher:
         self.handler = QueueLogHandler(self.events)
         logging.getLogger('pollevbot').addHandler(self.handler)
         self._build()
+        self._refresh_host_editor()
         self.mode.trace_add('write', self._mode_changed)
         self._mode_changed()
         self._refresh_model()
@@ -77,6 +80,7 @@ class Launcher:
         self.model_heading_font = tkfont.nametofont('TkDefaultFont').copy()
         self.model_heading_font.configure(weight='bold')
         style.configure('Model.TLabelframe.Label', font=self.model_heading_font)
+        style.configure('SmallIcon.TButton', padding=(0, 0))
         icon_color = style.lookup('TLabel', 'foreground') or '#555555'
         rgb = self.root.winfo_rgb(icon_color)
         icon_color = '#{:02x}{:02x}{:02x}'.format(*(channel // 257 for channel in rgb))
@@ -135,9 +139,17 @@ class Launcher:
                 row=row, column=0, sticky='w', padx=(0, 18), pady=9)
 
         label('Presenter', 0, 'person')
-        host_entry = ttk.Entry(form, textvariable=self.host)
-        host_entry.grid(row=0, column=1, sticky='ew')
-        self.inputs.append((host_entry, 'normal'))
+        host_row = ttk.Frame(form)
+        host_row.grid(row=0, column=1, sticky='ew')
+        host_row.columnconfigure(0, weight=1)
+        self.host_combo = ttk.Combobox(host_row, textvariable=self.host,
+                                       values=self.recent_hosts, state='normal')
+        self.host_combo.grid(row=0, column=0, sticky='ew')
+        self.host_edit_button = ttk.Button(host_row, image=self.icons['edit'], width=1,
+                                           style='SmallIcon.TButton',
+                                           command=self.edit_recent_hosts)
+        self.host_edit_button.grid(row=0, column=1, padx=(5, 0))
+        self.inputs.extend(((self.host_combo, 'normal'), (self.host_edit_button, 'normal')))
         label('Answer mode', 1, 'document')
         mode = ttk.Menubutton(form, textvariable=self.mode, direction='below',
                               style='Mode.TMenubutton')
@@ -154,7 +166,7 @@ class Launcher:
         self.theme_entry.grid(row=2, column=1, sticky='ew')
         self.inputs.append((self.theme_entry, 'normal'))
         self.theme_hint = ttk.Label(form,
-            text='Optional: NLP transformers or MCQ (A–D). Blank uses “yes”.', wraplength=380)
+            text="Used when the bot can't read a question.")
         self.theme_hint.grid(row=3, column=1, sticky='w', pady=(0, 4))
         label('Run for', 4, 'timer')
         duration_row = ttk.Frame(form)
@@ -204,7 +216,7 @@ class Launcher:
         scrollbar.configure(command=self.logs.yview)
         self.logs.tag_configure('warning', background='#fff1a8', foreground='#5b4300')
         self.logs.tag_configure('error', background='#ffd8d8', foreground='#9b1c1c')
-        host_entry.focus_set()
+        self.host_combo.focus_set()
 
     def _mode_changed(self, *_):
         if self.mode.get() == MODE_NAMES['llm']:
@@ -235,7 +247,75 @@ class Launcher:
             raise ValueError('Enter a number for the duration.') from exc
         return LauncherSettings(self.host.get(), MODE_VALUES[self.mode.get()], self.theme.get(),
                                 duration, self.unit.get(), self.keep_browser.get(),
-                                self.model_path, self.gpu_layers).validate()
+                                self.model_path, self.gpu_layers,
+                                recent_hosts=list(self.recent_hosts)).validate()
+
+    def _refresh_host_editor(self, busy=None):
+        if busy is None:
+            busy = self.worker is not None
+        self.host_edit_button.configure(
+            state='normal' if self.recent_hosts and not busy else 'disabled')
+
+    def edit_recent_hosts(self):
+        if self.worker is not None or not self.recent_hosts:
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Edit hosts')
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        content = ttk.Frame(dialog, padding=16)
+        content.pack(fill='both', expand=True)
+        rows = ttk.Frame(content)
+        rows.pack(fill='x', expand=True)
+        style = ttk.Style(dialog)
+        row_bg = style.lookup('TFrame', 'background') or dialog.cget('background')
+        row_fg = style.lookup('TLabel', 'foreground') or '#333333'
+
+        def remove_host(host, row):
+            settings = LauncherSettings.load()
+            settings.recent_hosts = [saved for saved in settings.recent_hosts
+                                     if saved != host]
+            try:
+                settings.save()
+            except OSError as exc:
+                messagebox.showerror('Could not update recent hosts', str(exc), parent=dialog)
+                return
+            self.recent_hosts = settings.recent_hosts
+            self.host_combo.configure(values=self.recent_hosts)
+            if not self.recent_hosts:
+                dialog.destroy()
+                self._refresh_host_editor()
+                return
+            row.destroy()
+            self._refresh_host_editor()
+            dialog.update_idletasks()
+            dialog.geometry('{}x{}+{}+{}'.format(
+                dialog.winfo_reqwidth(), dialog.winfo_reqheight(),
+                dialog.winfo_x(), dialog.winfo_y()))
+
+        for host in self.recent_hosts:
+            row = ttk.Frame(rows)
+            row.pack(fill='x', pady=2)
+            ttk.Label(row, text=host).pack(side='left', fill='x', expand=True, padx=(0, 12))
+            remove_control = tk.Label(
+                row, text='×', width=2, height=1, padx=0, pady=0,
+                font=('TkDefaultFont', 12, 'bold'), background=row_bg,
+                foreground=row_fg, cursor='hand2', takefocus=True,
+                highlightthickness=0)
+            remove_control.pack(side='right', padx=(8, 0))
+            remove = lambda _event=None, value=host, host_row=row: remove_host(value, host_row)
+            remove_control.bind('<Button-1>', remove)
+            remove_control.bind('<Return>', remove)
+            remove_control.bind('<space>', remove)
+        ttk.Button(content, text='Done', command=dialog.destroy).pack(anchor='e', pady=(12, 0))
+        dialog.bind('<Escape>', lambda _event: dialog.destroy())
+        dialog.protocol('WM_DELETE_WINDOW', dialog.destroy)
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry('+{}+{}'.format(x, y))
+        dialog.grab_set()
+        dialog.focus_set()
 
     def browse(self):
         path = filedialog.askopenfilename(parent=self.root, title='Choose a GGUF instruct model',
@@ -265,6 +345,7 @@ class Launcher:
             widget.configure(state='disabled' if busy else state)
         self.start_button.configure(state='disabled' if busy else 'normal')
         self.stop_button.configure(state='normal' if busy else 'disabled')
+        self._refresh_host_editor(busy)
         self._refresh_account(busy)
         if busy:
             self.download_button.configure(state='disabled')
@@ -277,7 +358,10 @@ class Launcher:
         try:
             settings = self._settings()
             import playwright.sync_api
+            settings.remember_host()
             settings.save()
+            self.recent_hosts = settings.recent_hosts
+            self.host_combo.configure(values=self.recent_hosts)
         except (ValueError, OSError, ImportError) as exc:
             messagebox.showerror('Could not start', str(exc), parent=self.root)
             return

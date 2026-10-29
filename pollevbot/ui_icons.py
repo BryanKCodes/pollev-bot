@@ -15,6 +15,11 @@ def make_icons(master, color):
         'logout': [(8, 3, 3, 3), (3, 3, 3, 15), (3, 15, 8, 15),
                    (8, 9, 16, 9), (12, 5, 16, 9), (16, 9, 12, 13)],
         'chevron': [(3, 5, 7, 9), (7, 9, 11, 5)],
+        'edit': [(2, 1, 8, 1), (8, 1, 11, 4), (11, 4, 11, 9),
+                 (2, 1, 2, 12), (2, 12, 5, 12), (8, 1, 8, 4),
+                 (8, 4, 11, 4), (4, 6, 8, 6), (4, 8, 7, 8),
+                 (6, 12, 11, 7), (8, 13, 13, 8), (6, 12, 7, 13),
+                 (7, 13, 8, 13), (11, 7, 13, 8)],
         'play': [], 'stop': [],
     }
     circles = {'person': (9, 5, 2.5), 'timer': (9, 9, 6.5)}
@@ -27,7 +32,7 @@ def make_icons(master, color):
 
     icons = {}
     for name, lines in segments.items():
-        size = 14 if name == 'chevron' else 18
+        size = 14 if name in ('chevron', 'edit') else 18
         icon = tk.PhotoImage(master=master, width=size, height=size)
         for y in range(size):
             for x in range(size):
